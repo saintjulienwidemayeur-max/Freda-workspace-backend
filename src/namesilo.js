@@ -10,8 +10,8 @@
  *  - codes : 300 succès ; 301 succès mais serveurs de noms NameSilo utilisés ; 302 succès mais contact par défaut utilisé ;
  *    252 (domainLock) = déjà verrouillé
  *  - getPrices : { com: { registration, transfer, renew }, ... } ; getAccountBalance : { balance }
- * Vérifié en réel (clé invalide) : https://www.namesilo.com/api/ et https://sandbox.namesilo.com/api/ répondent avec la même enveloppe,
- * statut HTTP 401 et { reply: { code: 110, detail: 'Invalid API key' } }. Les identifiants sandbox se demandent à NameSilo.
+ * Vérifié en réel (clé invalide) : statut HTTP 401 et { reply: { code: 110, detail: 'Invalid API key' } }.
+ * Pas de sandbox disponible : cfg.dryRun (défaut) rend register() et lock() inoffensifs ; les lectures (disponibilité, prix, solde) sont réelles.
  * Non documenté publiquement : table complète des codes d'erreur et limites de débit.
  */
 class NameSiloError extends Error {
@@ -83,6 +83,7 @@ function createClient(cfg, fetchImpl = fetch) {
      * Retourne { code, message, orderAmount, nameserversFallback, contactFallback }.
      */
     async register({ domain, years, privacy = true, autoRenew = false, contactId, nameservers = [] }) {
+      if (cfg.dryRun) return { code: 300, message: 'DRY RUN : aucun achat effectué.', orderAmount: null, nameserversFallback: false, contactFallback: false, dryRun: true };
       const params = { domain, years, private: privacy ? 1 : 0, auto_renew: autoRenew ? 1 : 0, contact_id: contactId };
       if (nameservers.length >= 2) nameservers.slice(0, 13).forEach((ns, i) => { params['ns' + (i + 1)] = ns; });
       const r = await call('registerDomain', params);
@@ -92,6 +93,7 @@ function createClient(cfg, fetchImpl = fetch) {
 
     /** Verrouille le domaine ; le code 252 (« déjà verrouillé ») est un succès. */
     async lock(domain) {
+      if (cfg.dryRun) return { code: 300, detail: 'dry-run' };
       try { return await call('domainLock', { domain }); }
       catch (e) { if (e instanceof NameSiloError && Number(e.code) === 252) return { code: 252, detail: e.detail }; throw e; }
     },

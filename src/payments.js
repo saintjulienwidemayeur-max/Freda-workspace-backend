@@ -1,7 +1,7 @@
 /**
  * Moyens de paiement. Le fournisseur réel (Freda Pay : carte, MonCash, NatCash) reste à brancher ici :
  * implémentez charge() et refund() dans createFredaPay(). Tant qu'il n'est pas prêt, seul « demo »
- * (qui approuve tout) existe, et il est INTERDIT avec NAMESILO_ENV=production (voir config.assertSafe).
+ * (qui approuve tout) existe, et il est INTERDIT avec NAMESILO_MODE=live (voir config.assertSafe).
  */
 class PaymentError extends Error {
   constructor(message, status = 402) { super(message); this.name = 'PaymentError'; this.status = status; }

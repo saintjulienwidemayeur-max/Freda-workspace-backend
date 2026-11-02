@@ -46,7 +46,7 @@ async function setup(over = {}) {
   const state = { taken: ['pris.com'], premium: [], longTerm: [], balance: 500, failRegister: [], registerCode: 300, lockCode: 300 };
   const ns = await fakeNameSilo(state);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-'));
-  const cfg = loadConfig({ NAMESILO_API_KEY: 'test-key', NAMESILO_BASE_URL: ns.url, AUTH_MODE: 'demo', DATA_FILE: path.join(dir, 's.json'), PRICE_MARKUP_PERCENT: '30', PRICE_MIN_MARKUP: '1.5', DOMAIN_TLDS: '.com,.net,.org,.io,.xyz', ...over.env });
+  const cfg = loadConfig({ NAMESILO_API_KEY: 'test-key', NAMESILO_BASE_URL: ns.url, AUTH_MODE: 'demo', DATA_FILE: path.join(dir, 's.json'), PRICE_MARKUP_PERCENT: '30', PRICE_MIN_MARKUP: '1.5', DOMAIN_TLDS: '.com,.net,.org,.io,.xyz', NAMESILO_MODE: 'live', ...over.env });
   const refunds = [];
   const payments = over.payments || { name: 'test', async charge({ amount, reference }) { return { id: 'ch_' + reference, amount }; }, async refund(r) { refunds.push(r); return { id: 'rf' }; } };
   const app = createApp({ cfg, payments });
@@ -258,8 +258,30 @@ test('CORS : seules les origines autorisées reçoivent les en-têtes', async ()
   await t.close();
 });
 
+test('dry-run (défaut) : lectures réelles, mais aucun enregistrement ni verrouillage NameSilo', async () => {
+  const t = await setup({ env: { NAMESILO_MODE: 'dry-run' } });
+  assert.strictEqual(t.cfg.namesilo.dryRun, true);
+  assert.strictEqual((await (await t.api('/api/health')).json()).registrar, 'dry-run');
+  const r = await t.api('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1 } });
+  assert.strictEqual(r.status, 200);
+  const d = await r.json();
+  assert.strictEqual(d.dryRun, true);
+  assert.ok(t.ns.calls.some((c) => c.op === 'checkRegisterAvailability'), 'disponibilité réelle');
+  assert.ok(t.ns.calls.some((c) => c.op === 'getAccountBalance'), 'solde réel');
+  assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'), 'aucun achat');
+  assert.ok(!t.ns.calls.some((c) => c.op === 'domainLock'), 'aucun verrouillage');
+  assert.strictEqual((await (await t.api('/api/domains')).json()).domains[0].dryRun, true);
+  await t.close();
+});
+
+test('le mode par défaut est dry-run (jamais live sans le demander)', () => {
+  assert.strictEqual(loadConfig({}).namesilo.mode, 'dry-run');
+  assert.strictEqual(loadConfig({ NAMESILO_MODE: 'LIVE' }).namesilo.mode, 'dry-run');   // valeur exacte « live » requise
+  assert.strictEqual(loadConfig({ NAMESILO_MODE: 'live' }).namesilo.dryRun, false);
+});
+
 test('démarrage sécurisé : refuse achats réels avec faux paiements, clé absente, auth demo en production', () => {
-  assert.ok(assertSafe(loadConfig({ NAMESILO_ENV: 'production', NAMESILO_API_KEY: 'k', PAYMENTS_PROVIDER: 'demo', JWT_SECRET: 'x'.repeat(40) })).some((e) => /faux|sans vrai paiement/.test(e)));
+  assert.ok(assertSafe(loadConfig({ NAMESILO_MODE: 'live', NAMESILO_API_KEY: 'k', PAYMENTS_PROVIDER: 'demo', JWT_SECRET: 'x'.repeat(40) })).some((e) => /faux|sans vrai paiement/.test(e)));
   assert.ok(assertSafe(loadConfig({ JWT_SECRET: 'x'.repeat(40) })).some((e) => /NAMESILO_API_KEY/.test(e)));
   assert.ok(assertSafe(loadConfig({ NODE_ENV: 'production', AUTH_MODE: 'demo', NAMESILO_API_KEY: 'k' })).some((e) => /AUTH_MODE/.test(e)));
   assert.deepStrictEqual(assertSafe(loadConfig({ NAMESILO_API_KEY: 'k', JWT_SECRET: 'x'.repeat(40) })), []);

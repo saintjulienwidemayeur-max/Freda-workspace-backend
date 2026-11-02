@@ -52,7 +52,7 @@ function createApp(deps) {
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     const url = new URL(req.url, 'http://x');
     try {
-      if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, registrar: cfg.namesilo.env, payments: payments.name }, cors);
+      if (req.method === 'GET' && url.pathname === '/api/health') return send(res, 200, { ok: true, registrar: cfg.namesilo.mode, payments: payments.name }, cors);
 
       if (req.method === 'GET' && url.pathname === '/api/domains/search') {
         if (!searchLimit(ip)) throw new HttpError(429, 'Trop de recherches. Réessayez dans une minute.');
@@ -86,7 +86,7 @@ if (require.main === module) {
   const cfg = loadConfig();
   const problems = assertSafe(cfg);
   if (problems.length) { problems.forEach((p) => log('fatal', p)); process.exit(1); }
-  createApp({ cfg }).listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.env, payments: cfg.payments.provider }));
+  createApp({ cfg }).listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.mode, payments: cfg.payments.provider }));
 }
 
 module.exports = { createApp };

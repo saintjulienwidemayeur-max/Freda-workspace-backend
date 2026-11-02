@@ -86,7 +86,7 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
 
     const order = store.saveOrder({
       id: 'ord_' + crypto.randomBytes(8).toString('hex'), reference: 'FP-' + Date.now().toString().slice(-8),
-      userId: user.id, kind: 'domain', years, lines, amount, currency: 'USD', status: 'pending', createdAt: new Date().toISOString(),
+      userId: user.id, kind: 'domain', years, lines, amount, currency: 'USD', status: 'pending', dryRun: cfg.namesilo.dryRun, createdAt: new Date().toISOString(),
     });
     if (idempotencyKey) store.setIdem(user.id, idempotencyKey, order.id);
 
@@ -110,7 +110,7 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
         l.registrarCost = reg.orderAmount;
         try { await registrar.lock(l.name); } catch (e) { log('warn', 'lock_failed', { domain: l.name, code: e.code }); }
         const exp = new Date(); exp.setFullYear(exp.getFullYear() + years);
-        store.addDomain({ userId: user.id, name: l.name, orderId: order.id, registeredAt: new Date().toISOString().slice(0, 10), expiresAt: exp.toISOString().slice(0, 10), years, locked: true, autoRenew: false, registrarCost: l.registrarCost ?? null });   // renouvellement géré par Freda (à implémenter) : NameSilo auto_renew=0
+        store.addDomain({ userId: user.id, name: l.name, orderId: order.id, registeredAt: new Date().toISOString().slice(0, 10), expiresAt: exp.toISOString().slice(0, 10), years, locked: true, autoRenew: false, registrarCost: l.registrarCost ?? null, dryRun: cfg.namesilo.dryRun });   // renouvellement géré par Freda (à implémenter) : NameSilo auto_renew=0
         done.push(l);
       } catch (e) {
         log('error', 'register_failed', { domain: l.name, code: e.code, detail: e.detail });
@@ -129,7 +129,7 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
   }
 
   function summarize(o) {
-    return { status: 'succeeded', reference: o.reference, orderId: o.id, amount: o.amount, currency: o.currency, domains: o.registered || o.lines.map((l) => l.name), failed: o.failed || [], orderStatus: o.status };
+    return { status: 'succeeded', dryRun: !!o.dryRun, reference: o.reference, orderId: o.id, amount: o.amount, currency: o.currency, domains: o.registered || o.lines.map((l) => l.name), failed: o.failed || [], orderStatus: o.status };
   }
 
   return { search, buy, HttpError };

@@ -11,8 +11,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: NAMESILO_ENV
-        value: sandbox          # passer à production seulement quand Freda Pay est branché
+      - key: NAMESILO_MODE
+        value: dry-run          # passer à live seulement quand Freda Pay est branché
       - key: NAMESILO_API_KEY
         sync: false
       - key: NAMESILO_CONTACT_ID
@@ -20,7 +20,7 @@ services:
       - key: JWT_SECRET
         sync: false
       - key: PAYMENTS_PROVIDER
-        value: demo             # interdit avec NAMESILO_ENV=production
+        value: demo             # interdit avec NAMESILO_MODE=live
       - key: ALLOWED_ORIGINS
         value: https://fredaworkspace.com
       - key: DATA_FILE
