@@ -22,24 +22,28 @@ function fakeNameSilo(state) {
     const q = Object.fromEntries(u.searchParams);
     calls.push({ op, q });
     const reply = (r) => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ request: { operation: op }, reply: r })); };
-    if (q.key !== 'test-key') return reply({ code: 110, detail: 'Invalid API Key' });
+    if (q.key !== 'test-key') { res.statusCode = 401; return reply({ code: 110, detail: 'Invalid API key' }); }   // comportement réel : HTTP 401 + code 110
     if (op === 'getPrices') return reply({ code: 300, detail: 'success', com: { registration: '10.00', transfer: '10.00', renew: '12.00' }, net: { registration: '11.00', transfer: '11.00', renew: '13.00' }, org: { registration: '9.00', transfer: '9.00', renew: '11.00' }, io: { registration: '30.00', transfer: '30.00', renew: '40.00' } });
     if (op === 'checkRegisterAvailability') {
+      // Formes de la référence officielle : available[] = { domain, price, premium (0/1), duration } ; unavailable = { domain } (objet si un seul)
       const ds = q.domains.split(',');
       const free = ds.filter((d) => !state.taken.includes(d));
-      const item = (d) => ({ domain: d, price: 10, premium: state.premium.includes(d) ? '1' : '0' });
-      return reply({ code: 300, detail: 'success', available: free.length === 1 ? item(free[0]) : free.map(item), unavailable: ds.filter((d) => state.taken.includes(d)).map((d) => ({ domain: d })) });
+      const taken = ds.filter((d) => state.taken.includes(d)).map((d) => ({ domain: d }));
+      const item = (d) => ({ domain: d, price: 9.99, premium: state.premium.includes(d) ? 1 : 0, duration: state.longTerm.includes(d) ? 2 : 1 });
+      const out = { code: 300, detail: 'success', available: free.map(item) };
+      if (taken.length) out.unavailable = taken.length === 1 ? taken[0] : taken;
+      return reply(out);
     }
     if (op === 'getAccountBalance') return reply({ code: 300, detail: 'success', balance: String(state.balance) });
-    if (op === 'registerDomain') return state.failRegister.includes(q.domain) ? reply({ code: 261, detail: 'Registry error' }) : reply({ code: 300, detail: 'success', message: 'Your domain registration was successfully processed' });
-    if (op === 'domainLock') return reply({ code: 300, detail: 'success' });
+    if (op === 'registerDomain') return state.failRegister.includes(q.domain) ? reply({ code: 261, detail: 'Registry error' }) : reply({ code: state.registerCode, detail: 'success', message: 'Your domain registration was successfully processed.', domain: q.domain, order_amount: 10 });
+    if (op === 'domainLock') return state.lockCode === 252 ? reply({ code: 252, detail: 'Domain is already Locked - No update made.' }) : reply({ code: 300, detail: 'success' });
     reply({ code: 210, detail: 'unknown operation' });
   });
   return new Promise((r) => server.listen(0, '127.0.0.1', () => r({ server, calls, url: 'http://127.0.0.1:' + server.address().port + '/api' })));
 }
 
 async function setup(over = {}) {
-  const state = { taken: ['pris.com'], premium: [], balance: 500, failRegister: [] };
+  const state = { taken: ['pris.com'], premium: [], longTerm: [], balance: 500, failRegister: [], registerCode: 300, lockCode: 300 };
   const ns = await fakeNameSilo(state);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fw-'));
   const cfg = loadConfig({ NAMESILO_API_KEY: 'test-key', NAMESILO_BASE_URL: ns.url, AUTH_MODE: 'demo', DATA_FILE: path.join(dir, 's.json'), PRICE_MARKUP_PERCENT: '30', PRICE_MIN_MARKUP: '1.5', DOMAIN_TLDS: '.com,.net,.org,.io,.xyz', ...over.env });
@@ -115,6 +119,41 @@ test('achat : domaine indisponible ou premium -> 409, aucun paiement, aucun enre
   }
   assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'));
   await t.close();
+});
+
+test('achat : durée minimale > 1 an (duration) traitée comme indisponible', async () => {
+  const t = await setup();
+  t.state.longTerm.push('long.com');
+  const r = await t.api('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['long.com'], years: 1 } });
+  assert.strictEqual(r.status, 409);
+  assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'));
+  await t.close();
+});
+
+test('achat : codes 301/302 = succès (avertissements journalisés), domaine déjà verrouillé (252) toléré, coût réel enregistré', async () => {
+  for (const code of [301, 302]) {
+    const t = await setup();
+    t.state.registerCode = code; t.state.lockCode = 252;
+    const r = await t.api('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1 } });
+    assert.strictEqual(r.status, 200, 'code ' + code);
+    const mine = await (await t.api('/api/domains')).json();
+    assert.strictEqual(mine.domains[0].registrarCost, 10);
+    assert.strictEqual(mine.domains[0].autoRenew, false, 'auto_renew=0 chez NameSilo : ne pas promettre un renouvellement automatique inexistant');
+    await t.close();
+  }
+});
+
+test('enregistrement : paramètres conformes à la référence (private=1, auto_renew=0 explicite, ns1-ns13 seulement si ≥ 2)', async () => {
+  const one = await setup({ env: { NAMESERVERS: 'ns1.fredaworkspace.com' } });
+  await one.api('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1 } });
+  const q1 = one.ns.calls.find((c) => c.op === 'registerDomain').q;
+  assert.strictEqual(q1.private, '1'); assert.strictEqual(q1.auto_renew, '0'); assert.strictEqual(q1.ns1, undefined, 'un seul serveur : ignoré');
+  await one.close();
+  const two = await setup({ env: { NAMESERVERS: 'ns1.fredaworkspace.com,ns2.fredaworkspace.com' } });
+  await two.api('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1 } });
+  const q2 = two.ns.calls.find((c) => c.op === 'registerDomain').q;
+  assert.strictEqual(q2.ns1, 'ns1.fredaworkspace.com'); assert.strictEqual(q2.ns2, 'ns2.fredaworkspace.com');
+  await two.close();
 });
 
 test('achat : entrées invalides rejetées (nom, extension, durée, quantité)', async () => {
@@ -205,6 +244,8 @@ test('clé API invalide : erreur propre, pas de fuite de la clé', async () => {
   const r = await t.api('/api/domains/search?q=test');
   assert.strictEqual(r.status, 502);
   assert.ok(!JSON.stringify(await r.json()).includes('mauvaise-cle'));
+  const { createClient } = require('../src/namesilo');
+  await assert.rejects(createClient({ baseUrl: t.cfg.namesilo.baseUrl, key: 'x', timeoutMs: 5000 }).getPrices(), (e) => Number(e.code) === 110 && /Invalid API key/.test(e.detail), 'le code 110 du corps JSON est conservé malgré le HTTP 401');
   await t.close();
 });
 

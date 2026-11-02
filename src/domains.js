@@ -12,6 +12,8 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
     try { return await priceBook.load(); }
     catch (e) { log('error', 'prices_failed', { code: e.code }); throw new HttpError(502, 'Les tarifs sont momentanément indisponibles.', 'registrar_error'); }
   }
+  /* Vendable : pas premium (prix imprévisible) et enregistrable pour 1 an (certaines extensions imposent une durée minimale > 1). */
+  const sellable = (d) => !d.premium && (d.duration || 1) === 1;
   const inFlight = new Set();   // évite le double achat simultané d'un même nom
 
   /* ---------- Recherche (GET /domains/search?q=) : même forme que le frontend ---------- */
@@ -27,7 +29,7 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
     let avail;
     try { avail = await registrar.checkAvailability([...new Set(candidates)]); }
     catch (e) { log('error', 'search_failed', { code: e.code }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
-    const free = new Map(avail.available.filter((d) => !d.premium).map((d) => [d.domain, d]));
+    const free = new Map(avail.available.filter(sellable).map((d) => [d.domain, d]));
     const toResult = (label, tld) => {
       const p = book[tld] || book['.com'];
       const domain = label + tld;
@@ -63,7 +65,7 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
     let avail;
     try { avail = await registrar.checkAvailability(parsed.map((p) => p.domain)); }
     catch (e) { log('error', 'availability_failed', { code: e.code }); throw new HttpError(502, 'Le registraire ne répond pas. Aucun paiement n’a été effectué.', 'registrar_error'); }
-    const ok = new Set(avail.available.filter((d) => !d.premium).map((d) => d.domain));
+    const ok = new Set(avail.available.filter(sellable).map((d) => d.domain));
     const unavailable = parsed.filter((p) => !ok.has(p.domain)).map((p) => p.domain);
     if (unavailable.length) throw new HttpError(409, 'Domaine indisponible : ' + unavailable.join(', '), 'domain_unavailable');
 
@@ -101,10 +103,14 @@ function createDomainService({ cfg, registrar, priceBook, payments, store, log =
     const done = [], failed = [];
     for (const l of lines) {
       try {
-        await registrar.register({ domain: l.name, years, privacy: true, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
+        const reg = await registrar.register({ domain: l.name, years, privacy: true, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
+        if (reg.contactFallback) log('warn', 'contact_fallback', { domain: l.name });          // code 302 : contact par défaut utilisé
+        if (reg.nameserversFallback) log('warn', 'nameservers_fallback', { domain: l.name });  // code 301 : serveurs NameSilo utilisés
+        if (reg.orderAmount !== null && reg.orderAmount > l.cost * 1.1 + 0.5) log('warn', 'cost_mismatch', { domain: l.name, expected: l.cost, charged: reg.orderAmount });
+        l.registrarCost = reg.orderAmount;
         try { await registrar.lock(l.name); } catch (e) { log('warn', 'lock_failed', { domain: l.name, code: e.code }); }
         const exp = new Date(); exp.setFullYear(exp.getFullYear() + years);
-        store.addDomain({ userId: user.id, name: l.name, orderId: order.id, registeredAt: new Date().toISOString().slice(0, 10), expiresAt: exp.toISOString().slice(0, 10), years, locked: true, autoRenew: true });
+        store.addDomain({ userId: user.id, name: l.name, orderId: order.id, registeredAt: new Date().toISOString().slice(0, 10), expiresAt: exp.toISOString().slice(0, 10), years, locked: true, autoRenew: false, registrarCost: l.registrarCost ?? null });   // renouvellement géré par Freda (à implémenter) : NameSilo auto_renew=0
         done.push(l);
       } catch (e) {
         log('error', 'register_failed', { domain: l.name, code: e.code, detail: e.detail });
