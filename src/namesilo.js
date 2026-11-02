@@ -32,7 +32,7 @@ function createClient(cfg, fetchImpl = fetch) {
   async function call(operation, params = {}) {
     const url = new URL(`${cfg.baseUrl.replace(/\/$/, '')}/${operation}`);
     const qs = new URLSearchParams({ version: '1', type: 'json', key: cfg.key });
-    Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') qs.set(k, String(v)); });
+    Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && (v !== '' || k === 'rrhost')) qs.set(k, String(v)); });   // rrhost vide = racine du domaine (paramètre présent mais vide)
     url.search = qs.toString();
     let res;
     try { res = await fetchImpl(url, { signal: AbortSignal.timeout(cfg.timeoutMs || 20000) }); }
@@ -97,8 +97,65 @@ function createClient(cfg, fetchImpl = fetch) {
       try { return await call('domainLock', { domain }); }
       catch (e) { if (e instanceof NameSiloError && Number(e.code) === 252) return { code: 252, detail: e.detail }; throw e; }
     },
+    /** Déverrouille le domaine ; le code 253 (« déjà déverrouillé ») est un succès. */
+    async unlock(domain) {
+      if (cfg.dryRun) return { code: 300, detail: 'dry-run' };
+      try { return await call('domainUnlock', { domain }); }
+      catch (e) { if (e instanceof NameSiloError && Number(e.code) === 253) return { code: 253, detail: e.detail }; throw e; }
+    },
+
+    /** retrieveAuthCode : NameSilo ENVOIE le code EPP par e-mail au contact administratif du domaine (il n'est pas renvoyé par l'API). */
+    async requestAuthCode(domain) {
+      if (cfg.dryRun) return { code: 300, dryRun: true };
+      return call('retrieveAuthCode', { domain });
+    },
+
     async info(domain) { return call('getDomainInfo', { domain }); },
     async balance() { const r = await call('getAccountBalance'); return Number(r.balance); },
+
+    /** Renouvelle un domaine (renewDomain, 1-10 ans). Débite le solde du compte revendeur. */
+    async renew({ domain, years }) {
+      if (cfg.dryRun) return { code: 300, orderAmount: null, dryRun: true };
+      const r = await call('renewDomain', { domain, years });
+      return { code: Number(r.code), orderAmount: r.order_amount !== undefined ? Number(r.order_amount) : null };
+    },
+
+    /** Change les serveurs de noms (2 à 13). */
+    async setNameservers(domain, nameservers) {
+      if (cfg.dryRun) return { code: 300, dryRun: true };
+      const params = { domain };
+      nameservers.slice(0, 13).forEach((ns, i) => { params['ns' + (i + 1)] = ns; });
+      return call('changeNameServers', params);
+    },
+
+    /* ---------- DNS hébergé chez NameSilo (domaines enregistrés via NameSilo avec leurs serveurs par défaut) ---------- */
+    /** dnsListRecords : [{ id, type, host (complet), value, ttl, distance }] */
+    async dnsList(domain) {
+      const r = await call('dnsListRecords', { domain });
+      return asArray(r.resource_record).map((x) => ({ id: String(x.record_id), type: x.type, host: String(x.host || ''), value: String(x.value || ''), ttl: Number(x.ttl), distance: Number(x.distance || 0) }));
+    },
+    /** dnsAddRecord : rrhost est RELATIF au domaine (pas de « .DOMAIN »), « @ » = racine -> chaîne vide. */
+    async dnsAdd({ domain, type, host, value, ttl, distance }) {
+      if (cfg.dryRun) return { id: 'dry_' + Math.random().toString(36).slice(2, 10), dryRun: true };
+      const r = await call('dnsAddRecord', { domain, rrtype: type, rrhost: host === '@' ? '' : host, rrvalue: value, rrttl: ttl, rrdistance: type === 'MX' ? distance : undefined });
+      return { id: String(r.record_id) };
+    },
+    /** dnsUpdateRecord : le record_id CHANGE après chaque mise à jour. */
+    async dnsUpdate({ domain, id, host, value, ttl, distance, type }) {
+      if (cfg.dryRun) return { id, dryRun: true };
+      const r = await call('dnsUpdateRecord', { domain, rrid: id, rrhost: host === '@' ? '' : host, rrvalue: value, rrttl: ttl, rrdistance: type === 'MX' ? distance : undefined });
+      return { id: String(r.record_id) };
+    },
+    async dnsDelete(domain, id) {
+      if (cfg.dryRun) return { dryRun: true };
+      return call('dnsDeleteRecord', { domain, rrid: id });
+    },
+
+    /** registrantVerificationStatus : [{ email, domains, verified }] — vérification e-mail ICANN du titulaire. */
+    async registrantVerification(email) {
+      const r = await call('registrantVerificationStatus', { email });
+      return asArray(r.email).map((x) => ({ email: x.email_address, domains: Number(x.domains), verified: String(x.verified).toLowerCase() === 'yes' }));
+    },
   };
 }
 
