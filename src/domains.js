@@ -29,7 +29,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     log('info', 'search_done', { exact: exactName, asked: candidates.length, available: avail.available.length, unavailable: avail.unavailable.length, invalid: avail.invalid.length, exactStatus: got ? (sellable(got) ? 'free' : 'filtered') : avail.unavailable.includes(exactName) ? 'taken' : avail.invalid.includes(exactName) ? 'invalid' : 'absent', exactPremium: got ? got.premium : undefined, exactDuration: got ? got.duration : undefined });
     const toResult = (label, tld) => {
       const p = book[tld] || book['.com'];
-      return { domain: label + tld, label, tld, available: free.has(label + tld), price: p.price, renew: p.renew, included: false };
+      return { domain: label + tld, label, tld, available: free.has(label + tld), price: p.price, compare: p.compare || undefined, renew: p.renew, included: false };
     };
     const exact = toResult(n.label, primary);
     const results = tlds.filter((t) => t !== primary).map((t) => toResult(n.label, t));
@@ -78,7 +78,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
   /** GET /domains/prices — tarifs de vente par extension (même source que la recherche), pour les suggestions de saisie. */
   async function prices() {
     const book = await loadBook();
-    return { tlds: Object.values(book).map((e) => ({ tld: e.tld, price: e.price, renew: e.renew })).sort((a, b) => a.price - b.price) };
+    return { tlds: Object.values(book).map((e) => ({ tld: e.tld, price: e.price, compare: e.compare || undefined, renew: e.renew })).sort((a, b) => a.price - b.price) };
   }
 
   /** Administration : coût NameSilo, prix de vente et marge par extension. */

@@ -231,3 +231,17 @@ test('achat : confidentialité Whois — activée par défaut, désactivable par
   const priv = (d) => t.ns.calls.find((c) => c.op === 'registerDomain' && c.q.domain === d).q.private;
   assert.deepStrictEqual([priv('optout.com'), priv('optin.com'), priv('defaut.com')], ['0', '1', '1']);
 });
+
+test('prix barré : désactivé par défaut ; avec PRICE_COMPARE_PERCENT il est affiché mais le montant facturé ne change jamais', async () => {
+  const off = await setup();
+  const s0 = await (await off.api('/api/domains/search?q=barre')).json();
+  assert.strictEqual(s0.exact.compare, undefined);
+  const t = await setup({ env: { PRICE_COMPARE_PERCENT: '40' } });
+  const s = await (await t.api('/api/domains/search?q=barre')).json();
+  assert.ok(s.exact.compare > s.exact.price, 'prix barré supérieur au prix de vente');
+  assert.ok(String(s.exact.compare).endsWith('.99'));
+  const p = await (await t.api('/api/domains/prices')).json();
+  assert.strictEqual(p.tlds.find((x) => x.tld === '.com').compare, s.exact.compare);
+  const d = await (await buy(t, { domains: ['barre.com'] })).json();
+  assert.strictEqual(d.amount, s.exact.price, 'on facture le prix de vente, jamais le prix barré');
+});

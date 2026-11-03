@@ -41,6 +41,7 @@ function loadConfig(env = process.env) {
     pricing: {
       markupPercent: Number(env.PRICE_MARKUP_PERCENT ?? 35),
       minMarkup: Number(env.PRICE_MIN_MARKUP ?? 1.5),
+      comparePercent: Number(env.PRICE_COMPARE_PERCENT ?? 0),   // pourcentage de « prix barré » affiché au-dessus du prix de vente (affichage seulement ; 0 = aucun)
       priceCacheMs: Number(env.PRICE_CACHE_MS) || 6 * 3600 * 1000,
       htgRate: Number(env.HTG_RATE) || 132.5,
       yearlyMonthsBilled: Number(env.YEARLY_MONTHS_BILLED) || 10,
