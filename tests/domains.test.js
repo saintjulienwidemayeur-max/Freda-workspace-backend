@@ -221,3 +221,13 @@ test('GET /api/admin/domain-prices : coût NameSilo, prix de vente et marge — 
   assert.strictEqual(com.price, sold.exact.price, 'le prix de vente affiché est celui de la recherche');
   assert.strictEqual(com.margin, Math.round((com.price - 10) * 100) / 100);
 });
+
+test('achat : confidentialité Whois — activée par défaut, désactivable par le client, valeur invalide refusée', async () => {
+  const t = await setup();
+  assert.strictEqual((await buy(t, { domains: ['optout.com'], whoisPrivacy: 'non' })).status, 400);
+  assert.strictEqual((await buy(t, { domains: ['optout.com'], whoisPrivacy: false })).status, 200);
+  assert.strictEqual((await buy(t, { domains: ['optin.com'], whoisPrivacy: true })).status, 200);
+  assert.strictEqual((await buy(t, { domains: ['defaut.com'] })).status, 200);
+  const priv = (d) => t.ns.calls.find((c) => c.op === 'registerDomain' && c.q.domain === d).q.private;
+  assert.deepStrictEqual([priv('optout.com'), priv('optin.com'), priv('defaut.com')], ['0', '1', '1']);
+});

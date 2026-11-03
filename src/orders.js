@@ -70,7 +70,8 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
         if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", l.name))) throw new HttpError(409, 'Un de ces domaines est déjà enregistré.', 'domain_taken');
         if ((await db.get(`SELECT 1 FROM orders WHERE kind = 'domain' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?`, `%"name":"${l.name}"%`))) throw new HttpError(409, 'Un de ces domaines est déjà en cours d’achat.', 'domain_taken');
       }
-      amount = q.amount; payload = { lines: q.lines, years }; dryRun = cfg.namesilo.dryRun;
+      if (body.whoisPrivacy !== undefined && typeof body.whoisPrivacy !== 'boolean') throw new HttpError(400, 'Option de confidentialité invalide.', 'invalid_privacy');
+      amount = q.amount; payload = { lines: q.lines, years, privacy: body.whoisPrivacy !== false }; dryRun = cfg.namesilo.dryRun;   // confidentialité Whois gratuite : activée par défaut, désactivable par le client
     } else if (kind === 'subscription') {
       amount = planAmount(body.plan, body.cycle);
       const domain = body.domain ? String(body.domain).toLowerCase() : '';
@@ -217,10 +218,11 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
 
   async function fulfillDomain(o, user) {
     const { lines, years } = o.payload;
+    const privacy = o.payload.privacy !== false;   // commandes antérieures sans ce champ : confidentialité activée
     const done = [], failed = [];
     for (const l of lines) {
       try {
-        const reg = await registrar.register({ domain: l.name, years, privacy: true, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
+        const reg = await registrar.register({ domain: l.name, years, privacy, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
         if (reg.contactFallback) log('warn', 'contact_fallback', { domain: l.name });
         if (reg.nameserversFallback) log('warn', 'nameservers_fallback', { domain: l.name });
         if (reg.orderAmount !== null && reg.orderAmount > l.cost * 1.1 + 0.5) await alert('warn', 'Coût NameSilo supérieur au devis', { domain: l.name, expected: l.cost, charged: reg.orderAmount });
