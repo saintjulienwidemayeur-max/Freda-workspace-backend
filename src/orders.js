@@ -237,11 +237,14 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
     if (p.cycle === 'yearly') renews.setFullYear(renews.getFullYear() + 1); else renews.setMonth(renews.getMonth() + 1);
     db.tx(() => {
       db.run(`INSERT INTO subscriptions (user_id, plan, cycle, status, renews_at, started_at) VALUES (?,?,?,?,?,?)
-              ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, cycle = excluded.cycle, status = 'active', renews_at = excluded.renews_at`,
+              ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, cycle = excluded.cycle, status = 'active', renews_at = excluded.renews_at, notices = 0, cancel_at_period_end = 0`,
         o.user_id, p.plan, p.cycle, 'active', renews.toISOString().slice(0, 10), today());
       addInvoice(o.user_id, { label: `${plan.name} — ${p.cycle === 'yearly' ? 'annuel' : 'mensuel'}`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
       activity(o.user_id, 'mail-plus', `Offre ${plan.name} ${p.renewal ? 'renouvelée' : 'activée'}`);
     });
+    const back = await mail.reactivateMailboxes(o.user_id);      // offre payée à nouveau : les boîtes suspendues rouvrent
+    if (back.mailboxes.length) mailer.trySend({ to: user.email, ...templates.mailboxesReactivated(user, back.mailboxes, cfg.appUrl + '/connexion.html') });
+    if (back.failed) alert('warn', 'Boîtes non réactivées (à retenter)', { userId: o.user_id, failed: back.failed });
     let initialPassword = null;
     if (p.domain && !p.renewal) {
       await dns.autofix(o.user_id, p.domain, { quiet: true }).catch(() => log('warn', 'autofix_failed', { domain: p.domain }));

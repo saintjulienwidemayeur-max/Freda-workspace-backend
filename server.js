@@ -13,6 +13,7 @@ const { createAccounts } = require('./src/accounts');
 const { createDomainCatalog } = require('./src/domains');
 const { createDns } = require('./src/dns');
 const { createMail } = require('./src/mail');
+const { createSubscription } = require('./src/subscription');
 const { verifySignature } = require('./src/stripe');
 const { createOrders } = require('./src/orders');
 const { createJobs } = require('./src/jobs');
@@ -49,7 +50,8 @@ function createApp(deps) {
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
   const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider, dns });
   const orders = createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger });
-  const jobs = createJobs({ cfg, db, orders, mailer, log: logger });
+  const subscription = createSubscription({ cfg, db, mailer });
+  const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger });
   const workspace = createWorkspace({ db, accounts, dns, mail });
   const settings = createDomainSettings({ db, registrar, mailer, alert, log: logger, cfg });
   const authenticate = createAuthenticator(cfg, db);
@@ -120,6 +122,8 @@ function createApp(deps) {
     const body = await c.body();
     return orders.create({ user: c.user, body, idempotencyKey: String(c.req.headers['idempotency-key'] || '').slice(0, 100) || null });
   }, auth);
+  route('POST', '/api/subscription/cancel', async (c) => { limit(L.write, c.user.id); return subscription.cancel(c.user.id); }, auth);
+  route('POST', '/api/subscription/resume', async (c) => { limit(L.write, c.user.id); return subscription.resume(c.user.id); }, auth);
   route('GET', '/api/orders/:id', async (c, p) => orders.status(c.user.id, p[0]), auth);
 
   /* ----- domaines ----- */

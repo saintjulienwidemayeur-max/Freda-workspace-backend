@@ -30,6 +30,8 @@ function createPurelymail(cfg, log) {
     ownershipCode: async () => String((await call('getOwnershipCode', {})).code || ''),
     addDomain: (domain) => call('addDomain', { domainName: domain }),
     createUser: ({ local, domain, password }) => call('createUser', { userName: local, domainName: domain, password, enablePasswordReset: false, enableSearchIndexing: true, sendWelcomeEmail: false }),
+    /** Mot de passe imposé : sert à BLOQUER l'accès (suspension) ou à rouvrir la boîte (réactivation) sans toucher aux messages. */
+    setPassword: ({ local, domain, password }) => call('modifyUser', { userName: `${local}@${domain}`, newPassword: password }),
     deleteUser: ({ local, domain }) => call('deleteUser', { userName: `${local}@${domain}` }),
     /** La réponse de createRoutingRule est vide : on retrouve la règle créée pour pouvoir la supprimer plus tard. */
     async createRoutingRule({ domain, local, targets }) {
@@ -102,7 +104,7 @@ function createMail({ cfg, db, log, provider, dns }) {
     const b = db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
     if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
     if (b.role === 'Propriétaire' && db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId).n > 1) throw new HttpError(400, 'Supprimez d’abord les autres boîtes ou transférez la propriété.', 'owner_box');
-    if (pm.enabled && b.provider_status === 'active') await pm.deleteUser({ local: b.local_part, domain: b.domain });
+    if (pm.enabled && b.provider_status !== 'pending_provider') await pm.deleteUser({ local: b.local_part, domain: b.domain });
     db.tx(() => {
       for (const a of db.all('SELECT * FROM aliases WHERE user_id = ? AND to_addr = ?', userId, b.address)) db.run('DELETE FROM aliases WHERE id = ?', a.id);
       db.run('DELETE FROM mailboxes WHERE id = ?', b.id);
@@ -133,7 +135,38 @@ function createMail({ cfg, db, log, provider, dns }) {
     return { ok: true };
   }
 
-  return { listBoxes, listAliases, createBox, removeBox, addAlias, removeAlias, providerEnabled: pm.enabled };
+  const secret = () => crypto.randomBytes(18).toString('base64url');
+
+  /**
+   * Suspension (offre impayée ou résiliée) : l'accès est bloqué en remplaçant le mot de passe par un secret aléatoire jamais conservé ;
+   * les messages sont gardés et le courrier entrant continue d'arriver. Rien n'est supprimé. Les échecs restent « active » et sont retentés au passage suivant.
+   */
+  async function suspendMailboxes(userId) {
+    let suspended = 0, failed = 0;
+    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'active'", userId)) {
+      try {
+        if (pm.enabled) await pm.setPassword({ local: b.local_part, domain: b.domain, password: secret() });
+        db.run("UPDATE mailboxes SET provider_status = 'suspended' WHERE id = ?", b.id); suspended++;
+      } catch (e) { failed++; log('warn', 'mailbox_suspend_failed', { mailbox: b.address }); }
+    }
+    return { suspended, failed };
+  }
+
+  /** Réactivation après paiement : nouveau mot de passe par boîte (renvoyé UNE fois, jamais stocké). Une boîte en échec reste suspendue et sera retentée. */
+  async function reactivateMailboxes(userId) {
+    const mailboxes = []; let failed = 0;
+    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended'", userId)) {
+      const password = secret();
+      try {
+        if (pm.enabled) await pm.setPassword({ local: b.local_part, domain: b.domain, password });
+        db.run("UPDATE mailboxes SET provider_status = 'active' WHERE id = ?", b.id);
+        mailboxes.push({ address: b.address, password });
+      } catch (e) { failed++; log('warn', 'mailbox_reactivate_failed', { mailbox: b.address }); }
+    }
+    return { mailboxes, failed };
+  }
+
+  return { listBoxes, listAliases, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };

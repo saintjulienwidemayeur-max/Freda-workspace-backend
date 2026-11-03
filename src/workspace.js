@@ -7,7 +7,7 @@ function createWorkspace({ db, accounts, dns, mail }) {
     for (const d of domains) zones[d.name] = dns.list(userId, d.name);
     return {
       user: accounts.me(userId),
-      plan: sub ? { id: sub.plan, cycle: sub.cycle, renews: sub.renews_at, status: sub.status } : null,
+      plan: sub ? { id: sub.plan, cycle: sub.cycle, renews: sub.renews_at, status: sub.status, cancelAtPeriodEnd: !!sub.cancel_at_period_end } : null,
       domains: domains.map((d) => ({ name: d.name, status: d.status, external: !!d.external, dnsMode: d.dns_mode, registered: d.registered_at, expires: d.expires_at, autoRenew: !!d.auto_renew, locked: !!d.locked, primary: !!d.is_primary, dryRun: !!d.dry_run })),
       dns: zones,
       mailboxes: mail.listBoxes(userId),

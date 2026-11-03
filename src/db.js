@@ -67,6 +67,10 @@ const MIGRATIONS = [
   ALTER TABLE users ADD COLUMN stripe_customer_id TEXT NOT NULL DEFAULT '';
   ALTER TABLE payment_methods ADD COLUMN stripe_pm TEXT NOT NULL DEFAULT '';
   `,
+  /* 3 — anulation d'offre : arrêt du renouvellement à la fin de la période payée */
+  `
+  ALTER TABLE subscriptions ADD COLUMN cancel_at_period_end INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function openDb(file) {

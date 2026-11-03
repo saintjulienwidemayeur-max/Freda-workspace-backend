@@ -104,6 +104,9 @@ async function fakePurelymail(state) {
         if (!str(b.userName) || b.userName.includes('@') || !str(b.domainName) || !str(b.password)) return bad(res, 'createUser: userName = partie locale');
         if (!state.domains.includes(b.domainName)) return json(res, 200, { type: 'error', code: 'domainNotFound', message: 'add domain first' });
         state.users.push(`${b.userName}@${b.domainName}`); return json(res, 200, { type: 'success', result: {} });
+      case 'modifyUser':
+        if (!str(b.userName) || !b.userName.includes('@') || !str(b.newPassword)) return bad(res, 'modifyUser: userName complet + newPassword');
+        state.passwords = state.passwords || {}; state.passwords[b.userName] = b.newPassword; return json(res, 200, { type: 'success', result: {} });
       case 'deleteUser':
         if (!str(b.userName) || !b.userName.includes('@')) return bad(res, 'deleteUser: userName = adresse complète');
         return json(res, 200, { type: 'success', result: {} });

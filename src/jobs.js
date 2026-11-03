@@ -14,7 +14,7 @@ const SUB_THRESHOLDS = [[5, 1], [1, 2]];
 const DOMAIN_RETRY_AT_DAYS_LEFT = [7, 3, 1];             // renouvellement automatique des domaines : 7 j, 3 j et 1 j avant l'expiration
 const RETRY_AT_DAYS_LEFT = [0, -3, -5];                 // tentatives de prélèvement automatique : à l'échéance, puis +3 j et +5 j
 
-function createJobs({ cfg, db, orders, mailer, log }) {
+function createJobs({ cfg, db, orders, mailer, mail, log }) {
   const daysLeft = (iso, now) => Math.ceil((new Date(iso + 'T00:00:00Z').getTime() - now.getTime()) / DAY);
 
   /** Renouvelle 1 an un domaine sur la carte enregistrée, quelques jours AVANT l'expiration (un domaine échu entre en période de rédemption, plus chère). Retourne true si renouvelé. */
@@ -83,13 +83,26 @@ function createJobs({ cfg, db, orders, mailer, log }) {
     let sent = 0;
     const rows = db.all("SELECT s.*, u.email, u.name AS uname FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE s.status IN ('active','past_due')");
     for (const s of rows) {
-      if (s.status !== 'suspended' && await autoCharge(s, now)) continue;   // renouvelée automatiquement : ni « past_due » ni rappel
       const left = daysLeft(s.renews_at, now);
+      const plan0 = cfg.plans[s.plan].name;
+      if (s.cancel_at_period_end) {                       // résiliée : jamais de prélèvement ni de rappel ; à la fin de la période payée -> « cancelled » (boîtes suspendues plus bas)
+        if (left < 0) {
+          db.run("UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ?", s.user_id);
+          await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended({ name: s.uname }, plan0, `${cfg.appUrl}/espace/facturation.html`) });
+          log('info', 'subscription_cancelled_ended', { userId: s.user_id });
+        }
+        continue;
+      }
+      if (s.status !== 'suspended' && await autoCharge(s, now)) continue;   // renouvelée automatiquement : ni « past_due » ni rappel
       const user = { name: s.uname };
       const link = `${cfg.appUrl}/espace/facturation.html?renew=1`;
       const plan = cfg.plans[s.plan].name;
       if (left < 0 && s.status === 'active') db.run("UPDATE subscriptions SET status = 'past_due' WHERE user_id = ?", s.user_id);
-      if (left < -7 && s.status !== 'suspended') { db.run("UPDATE subscriptions SET status = 'suspended' WHERE user_id = ?", s.user_id); log('warn', 'subscription_suspended', { userId: s.user_id }); continue; }
+      if (left < -7 && s.status !== 'suspended') {
+        db.run("UPDATE subscriptions SET status = 'suspended' WHERE user_id = ?", s.user_id);
+        await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended(user, plan, link) });
+        log('warn', 'subscription_suspended', { userId: s.user_id }); continue;
+      }
       if (left <= 0 && !(s.notices & 4)) { await mailer.trySend({ to: s.email, ...templates.subscriptionDue(user, plan, 0, link) }); db.run('UPDATE subscriptions SET notices = notices | 4 WHERE user_id = ?', s.user_id); sent++; continue; }
       const due = SUB_THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(s.notices & bit));
       if (!due.length) continue;
@@ -100,12 +113,22 @@ function createJobs({ cfg, db, orders, mailer, log }) {
     return sent;
   }
 
+  /** Applique réellement les suspensions : toute offre « suspended » / « cancelled » dont des boîtes sont encore ouvertes (y compris après un échec précédent). */
+  async function enforceSuspensions() {
+    let n = 0;
+    for (const r of db.all("SELECT DISTINCT s.user_id FROM subscriptions s JOIN mailboxes m ON m.user_id = s.user_id WHERE s.status IN ('suspended','cancelled') AND m.provider_status = 'active'")) {
+      const out = await mail.suspendMailboxes(r.user_id); n += out.suspended;
+    }
+    return n;
+  }
+
   async function run(now = new Date()) {
     const out = {};
     try { out.sweep = await orders.sweep(); } catch (e) { log('error', 'job_sweep_failed', { message: e.message }); }
     if (cfg.renewals.enabled) {
       try { out.domainReminders = await domainReminders(now); } catch (e) { log('error', 'job_domains_failed', { message: e.message }); }
       try { out.subscriptionReminders = await subscriptionDue(now); } catch (e) { log('error', 'job_subs_failed', { message: e.message }); }
+      try { out.suspended = await enforceSuspensions(); } catch (e) { log('error', 'job_suspend_failed', { message: e.message }); }
     }
     return out;
   }
