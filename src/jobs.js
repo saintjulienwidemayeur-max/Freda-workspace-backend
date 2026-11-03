@@ -11,10 +11,31 @@ const { templates } = require('./mailer');
 const DAY = 86400000;
 const THRESHOLDS = [[30, 1], [14, 2], [7, 4], [1, 8]];     // [jours restants, bit déjà notifié]
 const SUB_THRESHOLDS = [[5, 1], [1, 2]];
+const DOMAIN_RETRY_AT_DAYS_LEFT = [7, 3, 1];             // renouvellement automatique des domaines : 7 j, 3 j et 1 j avant l'expiration
 const RETRY_AT_DAYS_LEFT = [0, -3, -5];                 // tentatives de prélèvement automatique : à l'échéance, puis +3 j et +5 j
 
 function createJobs({ cfg, db, orders, mailer, log }) {
   const daysLeft = (iso, now) => Math.ceil((new Date(iso + 'T00:00:00Z').getTime() - now.getTime()) / DAY);
+
+  /** Renouvelle 1 an un domaine sur la carte enregistrée, quelques jours AVANT l'expiration (un domaine échu entre en période de rédemption, plus chère). Retourne true si renouvelé. */
+  async function autoRenewDomain(d, now) {
+    if (!orders.cardsEnabled) return false;
+    const left = daysLeft(d.expires_at, now);
+    const attempt = DOMAIN_RETRY_AT_DAYS_LEFT.filter((x) => left <= x).length;
+    if (!attempt) return false;
+    const card = db.get("SELECT id FROM payment_methods WHERE user_id = ? AND type = 'card' AND stripe_pm <> '' ORDER BY is_default DESC, created_at LIMIT 1", d.user_id);
+    if (!card) return false;
+    if (db.get("SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?", `%"domain":"${d.name}"%`)) return false;   // un paiement manuel est déjà en cours
+    const key = `autorenew-dom-${d.id}-${d.expires_at}-${attempt}`;
+    if (db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', d.user_id, key)) return false;
+    const user = db.get('SELECT * FROM users WHERE id = ?', d.user_id);
+    try {
+      const o = await orders.create({ user, system: true, idempotencyKey: key, body: { kind: 'renewal', domain: d.name, years: 1, method: 'card', methodId: card.id } });
+      log('info', 'autorenew_domain', { domain: d.name, attempt, status: o.status });
+    } catch (e) { log('warn', 'autorenew_domain_failed', { domain: d.name, attempt, message: e.message }); }
+    const after = db.get('SELECT expires_at FROM domains WHERE id = ?', d.id);
+    return !!after && after.expires_at !== d.expires_at;
+  }
 
   async function domainReminders(now) {
     let sent = 0;
@@ -23,7 +44,8 @@ function createJobs({ cfg, db, orders, mailer, log }) {
       const left = daysLeft(d.expires_at, now);
       const user = { name: d.uname };
       if (left < 0 && d.status === 'active') db.run("UPDATE domains SET status = 'expired' WHERE id = ?", d.id);
-      if (!d.auto_renew) continue;                       // le client a désactivé les rappels pour ce domaine
+      if (!d.auto_renew) continue;                       // le client a désactivé le renouvellement automatique et les rappels pour ce domaine
+      if (await autoRenewDomain(d, now)) continue;       // renouvelé sur la carte enregistrée : aucun rappel
       const link = `${cfg.appUrl}/espace/domaines.html?renew=${encodeURIComponent(d.name)}`;
       if (left <= 0 && !(d.renewal_notices & 16)) { await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, 0, link) }); db.run('UPDATE domains SET renewal_notices = renewal_notices | 16 WHERE id = ?', d.id); sent++; continue; }
       const due = THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(d.renewal_notices & bit));

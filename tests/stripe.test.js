@@ -187,3 +187,64 @@ test('montant payé inférieur à la commande -> « needs_attention », rien n�
   assert.ok(!t.ns.calls.some((x) => x.op === 'registerDomain'));
   assert.ok(alerts.length >= 1);
 });
+
+async function domainWithCard(t) {
+  const r = await (await checkout(t, {})).json();
+  payAndComplete(t, r); await status(t, r.orderId);
+  return t.db.get('SELECT * FROM domains');
+}
+const setExpiry = (t, days) => t.db.run('UPDATE domains SET expires_at = ?', new Date(Date.now() + days * 86400000).toISOString().slice(0, 10));
+const renewCalls = (t) => t.ns.calls.filter((x) => x.op === 'renewDomain').length;
+
+test('domaine : renouvelé automatiquement 7 jours avant l’expiration sur la carte enregistrée, une seule fois, sans rappel ; pas avant', async () => {
+  const t = await withStripe();
+  const d = await domainWithCard(t);
+  setExpiry(t, 20); t.mailer.sent.length = 0;
+  await t.app.app.jobs.run();
+  assert.strictEqual(renewCalls(t), 0, 'trop tôt : seulement le rappel');
+  setExpiry(t, 6); t.mailer.sent.length = 0;
+  await t.app.app.jobs.run();
+  assert.strictEqual(renewCalls(t), 1);
+  const after = t.db.get('SELECT * FROM domains WHERE id = ?', d.id);
+  assert.ok(after.expires_at > new Date(Date.now() + 300 * 86400000).toISOString().slice(0, 10), 'prolongé d’un an');
+  assert.ok(!t.mailer.sent.some((m) => /expire/.test(m.subject)), 'aucun rappel d’expiration : déjà renouvelé');
+  await t.app.app.jobs.run(); await t.app.app.jobs.run();
+  assert.strictEqual(renewCalls(t), 1, 'jamais deux renouvellements');
+  const pi = t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').pop();
+  assert.strictEqual(pi.f.off_session, 'true');
+  assert.ok(t.db.get("SELECT 1 FROM invoices WHERE label LIKE 'Renouvellement neuf.com%'"));
+});
+
+test('domaine : carte refusée -> 3 tentatives (7 j, 3 j, 1 j) puis plus rien ; rappels par e-mail conservés', async () => {
+  const t = await withStripe();
+  await domainWithCard(t);
+  t.stState.decline = true;
+  const tries = () => t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length;
+  const base = tries();
+  for (const days of [6, 6, 2, 0, 0, 0]) { setExpiry(t, days); await t.app.app.jobs.run(); }
+  assert.strictEqual(tries(), base + 3);
+  assert.strictEqual(renewCalls(t), 0);
+  assert.ok(t.mailer.sent.some((m) => /expire/.test(m.subject)), 'le client est prévenu par e-mail');
+});
+
+test('domaine : renouvellement automatique désactivé par le client, domaine sans carte, domaine dry-run -> aucun prélèvement', async () => {
+  const t = await withStripe();
+  await domainWithCard(t);
+  setExpiry(t, 2);
+  t.db.run('UPDATE domains SET auto_renew = 0'); await t.app.app.jobs.run();
+  assert.strictEqual(renewCalls(t), 0, 'désactivé');
+  t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1'); await t.app.app.jobs.run();
+  assert.strictEqual(renewCalls(t), 0, 'dry-run');
+  t.db.run('UPDATE domains SET dry_run = 0'); t.db.run("DELETE FROM payment_methods"); await t.app.app.jobs.run();
+  assert.strictEqual(renewCalls(t), 0, 'pas de carte');
+});
+
+test('domaine : un paiement manuel déjà en cours bloque le prélèvement automatique (pas de double paiement)', async () => {
+  const t = await withStripe();
+  await domainWithCard(t);
+  setExpiry(t, 2);
+  assert.strictEqual((await t.user('/api/checkout', { method: 'POST', body: { kind: 'renewal', domain: 'neuf.com', years: 1, method: 'moncash' } })).status, 200);
+  const base = t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length;
+  await t.app.app.jobs.run();
+  assert.strictEqual(t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length, base);
+});
