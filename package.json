@@ -5,7 +5,7 @@
   "description": "API Freda Workspace : comptes, domaines (NameSilo), paiements Pay'm, DNS, Freda Mail, renouvellements",
   "main": "server.js",
   "engines": {
-    "node": ">=22.13"
+    "node": "22.x"
   },
   "scripts": {
     "start": "node server.js",

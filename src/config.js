@@ -86,7 +86,8 @@ function assertSafe(cfg) {
   if (cfg.payments.stripe.secretKey && !/^(sk|rk)_(test|live)_/.test(cfg.payments.stripe.secretKey)) errors.push('STRIPE_SECRET_KEY invalide (attendu sk_test_… ou sk_live_…).');
   if (cfg.payments.stripe.secretKey && !cfg.payments.stripe.webhookSecret) errors.push('STRIPE_WEBHOOK_SECRET (whsec_…) requis avec STRIPE_SECRET_KEY : sans webhook signé, les paiements par carte ne seraient confirmés que par balayage.');
   if (cfg.nodeEnv === 'production' && /^sk_test_/.test(cfg.payments.stripe.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Stripe de TEST avec NAMESILO_MODE=live : les achats réels seraient payés avec de fausses cartes.');
-  if (cfg.nodeEnv === 'production' && cfg.purelymail.apiKey && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe de boîte choisis par les clients pendant l’exécution de leur commande.');
+  if (cfg.nodeEnv === 'production' && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe de boîte choisis par les clients pendant l’exécution de leur commande.');
+  if (cfg.nodeEnv === 'production' && cfg.payments.provider === 'demo') errors.push('PAYMENTS_PROVIDER=demo interdit en production : toute commande serait « payée » sans paiement (boîtes mail réelles gratuites). Utilisez paym (ou NODE_ENV=staging pour une instance d’essai).');
   const { apns, fcm } = cfg.push;
   if ((apns.key || apns.keyId || apns.teamId || apns.bundleId) && !(apns.key && apns.keyId && apns.teamId && apns.bundleId)) errors.push('APNS_KEY, APNS_KEY_ID, APNS_TEAM_ID et APNS_BUNDLE_ID vont ensemble (notifications iPhone).');
   if (fcm.serviceAccount && (fcm.serviceAccount.invalid || !fcm.serviceAccount.private_key || !fcm.serviceAccount.client_email || !fcm.serviceAccount.project_id)) errors.push('FCM_SERVICE_ACCOUNT invalide (JSON de compte de service Firebase avec private_key, client_email, project_id).');

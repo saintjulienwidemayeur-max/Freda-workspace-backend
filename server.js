@@ -69,7 +69,10 @@ function createApp(deps) {
   const route = (method, pattern, handler, opts = {}) => routes.push({ method, re: new RegExp('^' + pattern.replace(/:[a-zA-Z]+/g, '([^/]+)') + '$'), handler, opts });
 
   /* ----- public ----- */
-  route('GET', '/api/health', async () => ({ ok: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled, cards: !!payments.cards }));
+  route('GET', '/api/health', async () => {
+    try { await db.get('SELECT COUNT(*) AS n FROM app_migrations'); } catch (e) { logger('error', 'health_db_failed', { message: e.message }); throw new HttpError(503, 'Base de données inaccessible.', 'db_unavailable'); }   // 503 : Render ne route plus vers une instance sans base
+    return { ok: true, database: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled, cards: !!payments.cards };
+  });
   route('GET', '/api/domains/search', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.search(c.url.searchParams.get('q')); });
   route('POST', '/api/auth/signup', async (c) => { limit(L.auth, c.ip); return await accounts.signup(await c.body()); });
   route('POST', '/api/auth/login', async (c) => { limit(L.auth, c.ip); return await accounts.login(await c.body(), c.ip); });

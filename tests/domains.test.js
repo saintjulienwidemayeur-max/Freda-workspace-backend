@@ -145,3 +145,21 @@ test('configuration : dry-run par défaut ; démarrage refusé si dangereux', ()
   assert.ok(assertSafe(loadConfig({ ...base, NAMESERVERS: 'ns1.x.com' })).some((e) => /NAMESERVERS/.test(e)));
   assert.deepStrictEqual(assertSafe(loadConfig(base)), []);
 });
+
+test('configuration de production : paiements « demo » refusés, DATA_KEY et DATABASE_URL obligatoires ; staging toléré', () => {
+  const base = { NAMESILO_API_KEY: 'k', JWT_SECRET: 'j'.repeat(40), AUTH_MODE: 'jwt', MAILER: 'brevo', BREVO_API_KEY: 'b', DATABASE_URL: 'postgresql://u:p@h:5432/db', DATA_KEY: 'a'.repeat(64) };
+  const errs = (env) => assertSafe(loadConfig({ ...base, ...env }));
+  assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'demo' }).some((e) => /demo.*interdit en production/.test(e)));
+  assert.deepStrictEqual(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b' }), []);
+  assert.deepStrictEqual(errs({ NODE_ENV: 'staging', PAYMENTS_PROVIDER: 'demo', MAILER: 'console', DATABASE_URL: '' }), [], 'instance d’essai : paiements fictifs, e-mails en console, base locale');
+  assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b', DATA_KEY: '' }).some((e) => /DATA_KEY/.test(e)));
+  assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b', DATABASE_URL: '' }).some((e) => /DATABASE_URL/.test(e)));
+  assert.ok(errs({ DATABASE_URL: 'mysql://x' }).some((e) => /invalide/.test(e)));
+});
+
+test('GET /api/health : 200 avec la base ; 503 si la base est inaccessible (Render retire alors l’instance)', async () => {
+  const t = await setup({});
+  const ok = await t.api('/api/health'); assert.strictEqual(ok.status, 200); assert.strictEqual((await ok.json()).database, true);
+  await t.app.app.db.close();
+  const down = await t.api('/api/health'); assert.strictEqual(down.status, 503); assert.strictEqual((await down.json()).code, 'db_unavailable');
+});

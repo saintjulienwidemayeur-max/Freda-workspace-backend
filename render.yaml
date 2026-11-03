@@ -5,7 +5,9 @@ services:
     name: freda-workspace-api
     runtime: node
     plan: starter
-    buildCommand: npm install --omit=dev
+    region: virginia        # même zone que la base Supabase (us-east-1) : chaque requête fait plusieurs allers-retours vers la base
+    numInstances: 1         # UNE seule instance (observateurs push, limiteurs de débit, tâches périodiques)
+    buildCommand: npm ci --omit=dev
     startCommand: node server.js
     healthCheckPath: /api/health
     envVars:
@@ -26,7 +28,7 @@ services:
       - key: NAMESILO_MODE
         value: dry-run          # passer à live seulement quand Pay'm est branché et testé
       - key: PAYMENTS_PROVIDER
-        value: demo             # interdit avec NAMESILO_MODE=live
+        value: paym             # « demo » est refusé en production (commandes gratuites)
       - key: MAILER
         value: brevo
       - key: NAMESILO_API_KEY
@@ -56,7 +58,7 @@ services:
       - key: PURELYMAIL_API_KEY
         sync: false
       - key: DATA_KEY
-        sync: false
+        generateValue: true     # 32 octets aléatoires, créés une seule fois par Render : copiez-les dans votre gestionnaire de mots de passe
       - key: APNS_KEY
         sync: false
       - key: APNS_KEY_ID

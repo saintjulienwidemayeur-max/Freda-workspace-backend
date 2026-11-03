@@ -88,3 +88,17 @@ Crée `fredatest-xxxxxxxx@domaine`, vérifie avec notre propre code (adaptateur 
 
 ## Déploiement (Render)
 `render.yaml` déclare le service `freda-workspace-api` (base = Supabase, pas de disque). Renseignez les secrets, associez `api.fredaworkspace.com`, puis dans le frontend : `API_BASE: 'https://api.fredaworkspace.com/api'` et `DEMO_MODE: false`.
+
+### Si le service Render a été créé à la main (sans Blueprint), `render.yaml` ne s'applique PAS
+Réglez dans Render : **Branch** = la branche à déployer (pas `main` si elle est en retard), **Build Command** = `npm ci --omit=dev`, **Start Command** = `node server.js`, **Region** = Virginia, **1 instance**, **Health Check Path** = `/api/health`, variable `NODE_VERSION=22`. Variables **obligatoires pour démarrer** (sinon le serveur refuse volontairement de démarrer et le journal liste ce qui manque) :
+| Variable | Valeur |
+|---|---|
+| `DATABASE_URL` | URI Supabase « Session pooler » |
+| `JWT_SECRET` | `openssl rand -base64 48` |
+| `DATA_KEY` | `openssl rand -base64 32` (à conserver) |
+| `ADMIN_TOKEN` | `openssl rand -base64 32` |
+| `NAMESILO_API_KEY` | votre clé (avec `NAMESILO_MODE=dry-run` tant que tout n'est pas testé) |
+| `MAILER=brevo` + `BREVO_API_KEY` | e-mails (reçus, réinitialisation) ; `MAIL_FROM` = expéditeur validé chez Brevo |
+| `PAYMENTS_PROVIDER=paym` + `PAYM_CLIENT_ID`, `PAYM_CLIENT_SECRET` | paiements (« demo » est refusé en production) |
+| `APP_URL`, `API_URL`, `ALLOWED_ORIGINS` | URL du site, de l'API, origines autorisées (CORS) |
+**Instance d'essai avant Pay'm / Brevo** : `NODE_ENV=staging` (autorise paiements `demo` et e-mails en console ; `NAMESILO_MODE=dry-run`, aucun achat réel) + `DATABASE_URL`, `JWT_SECRET`, `NAMESILO_API_KEY`. Ne jamais l'ouvrir au public : en `staging`, toute commande est « payée ».
