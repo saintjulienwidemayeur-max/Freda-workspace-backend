@@ -9,7 +9,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     catch (e) { log('error', 'prices_failed', { code: e.code }); throw new HttpError(502, 'Les tarifs sont momentanément indisponibles.', 'registrar_error'); }
   }
   /* Vendable : pas premium (prix imprévisible) et enregistrable pour 1 an (certaines extensions imposent une durée minimale > 1). */
-  const sellable = (d) => !d.premium && (d.duration || 1) === 1;
+  const sellable = (d) => !d.premium;   // NameSilo renvoie duration=10 (durée maximale) pour tous les domaines : ce n'est pas la durée minimale, on ne filtre pas dessus
 
   /** GET /domains/search?q= — forme attendue par assets/js/api.js. */
   async function search(q) {

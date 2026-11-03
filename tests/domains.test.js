@@ -53,12 +53,14 @@ test('achat (paiement immédiat) : prix serveur, enregistrement, verrouillage, d
   assert.ok(t.mailer.sent.some((m) => /Domaine enregistré/.test(m.subject)));
 });
 
-test('achat : indisponible / premium / durée minimale > 1 an -> 409 sans paiement ni enregistrement', async () => {
+test('achat : indisponible / premium -> 409 sans paiement ni enregistrement ; duration=10 (réponse réelle de NameSilo) reste vendable', async () => {
   const t = await setup();
   t.state.premium.push('cher.com'); t.state.longTerm.push('long.com');
-  for (const domain of ['pris.com', 'cher.com', 'long.com']) assert.strictEqual((await buy(t, { domains: [domain] })).status, 409, domain);
+  for (const domain of ['pris.com', 'cher.com']) assert.strictEqual((await buy(t, { domains: [domain] })).status, 409, domain);
   assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'));
   assert.strictEqual(t.paym.calls.length, 0);
+  const s = await (await t.api('/api/domains/search?q=long')).json();
+  assert.strictEqual(s.exact.available, true, 'duration=10 ne rend pas le domaine indisponible');
 });
 
 test('achat : entrées invalides rejetées', async () => {

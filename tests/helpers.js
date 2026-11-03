@@ -24,7 +24,7 @@ async function fakeNameSilo(state) {
         const ds = q.domains.split(',');
         const free = ds.filter((d) => !state.taken.includes(d));
         const taken = ds.filter((d) => state.taken.includes(d)).map((d) => ({ domain: d }));
-        const item = (d) => ({ domain: d, price: 9.99, premium: state.premium.includes(d) ? 1 : 0, duration: state.longTerm.includes(d) ? 2 : 1 });
+        const item = (d) => ({ domain: d, price: 9.99, premium: state.premium.includes(d) ? 1 : 0, duration: state.longTerm.includes(d) ? 10 : 1 });
         const out = { code: 300, detail: 'success', available: free.map(item) };
         if (taken.length) out.unavailable = taken.length === 1 ? taken[0] : taken;
         return reply(out);
