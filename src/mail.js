@@ -89,8 +89,26 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     catch (e) {
       if (!(e instanceof HttpError)) throw e;
       log('warn', 'purelymail_domain_pending', { domain: d.name });
+      // domaine hébergé ailleurs : c'est le CLIENT qui doit publier le TXT chez son hébergeur DNS ; sinon la propagation de notre propre zone suffit
+      if (d.external) throw new HttpError(409, `Pour activer l’email sur ${d.name}, ajoutez d’abord l’enregistrement TXT de vérification chez l’hébergeur de votre DNS, puis réessayez (propagation : jusqu’à 15 minutes).`, 'domain_ownership_required', { domain: d.name, record: { type: 'TXT', name: '@', value: code } });
       throw new HttpError(409, `Le domaine ${d.name} est en cours de vérification (propagation DNS, jusqu’à 15 minutes). Réessayez dans quelques minutes.`, 'domain_pending_verification');
     }
+  }
+
+  /**
+   * Étape « vérification du domaine pour l'email » : l'enregistrement TXT à publier + l'état (verified : accepté par Purelymail ; dns_ok : visible dans le DNS,
+   * la prochaine création de boîte réussira ; pending : pas encore visible). Zone gérée par Freda : publié automatiquement ; domaine externe : à ajouter chez l'hébergeur.
+   */
+  async function ownership(userId, domain) {
+    const d = ownDomain(userId, domain);
+    if (!pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
+    const code = await pm.ownershipCode();
+    if (!code) throw new HttpError(502, 'Le serveur de messagerie n’a pas fourni le code de vérification. Réessayez.', 'mail_provider_error');
+    if (dns) await dns.ensureOwnership(userId, d.name, code);
+    let status = 'pending';
+    if ((await pm.listDomains()).includes(d.name)) status = 'verified';
+    else if (dns && await dns.txtVisible(d.name, code)) status = 'dns_ok';
+    return { domain: d.name, external: !!d.external, managedByFreda: !d.external && d.dns_mode === 'registrar', record: { type: 'TXT', name: '@', value: code }, status };
   }
 
   const listBoxes = (userId) => db.all('SELECT * FROM mailboxes WHERE user_id = ? ORDER BY created_at', userId).map(box);
@@ -275,7 +293,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     smtp: { host: 'smtp.purelymail.com', port: 465, security: 'ssl', alternative: { port: 587, security: 'starttls' } },
   });
 
-  return { listBoxes, listAliases, connection, changePassword, appLogin, validatePassword, provider: pm, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
+  return { listBoxes, listAliases, connection, changePassword, appLogin, validatePassword, ownership, provider: pm, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };

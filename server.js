@@ -150,6 +150,7 @@ function createApp(deps) {
   /* ----- Freda Mail ----- */
   route('GET', '/api/mailboxes', async (c) => ({ mailboxes: mail.listBoxes(c.user.id), aliases: mail.listAliases(c.user.id) }), auth);
   route('POST', '/api/mailboxes', async (c) => { limit(L.write, c.user.id); return mail.createBox(c.user.id, await c.body()); }, auth);
+  route('GET', '/api/domains/:d/mail-ownership', async (c, p) => mail.ownership(c.user.id, decodeURIComponent(p[0])), auth);
   route('GET', '/api/mail/config', async () => mail.connection(), auth);
   /* Connexion de l'application mobile : adresse pro + mot de passe de la boîte (public, limité par IP et par adresse) */
   route('POST', '/api/mail/login', async (c) => { limit(L.auth, c.ip); return mail.appLogin(await c.body(2048)); });
@@ -209,7 +210,7 @@ function createApp(deps) {
     } catch (e) {
       const status = e.status || 500;
       if (status >= 500) logger('error', 'request_failed', { path: url.pathname, name: e.name, code: e.code, message: status === 500 ? e.message : undefined });
-      send(status, { message: status >= 500 && !(e instanceof HttpError) ? 'Erreur interne.' : e.message, code: e.code });
+      send(status, { message: status >= 500 && !(e instanceof HttpError) ? 'Erreur interne.' : e.message, code: e.code, ...(status < 500 && e.details ? { details: e.details } : {}) });
     }
   });
   server.app = { db, registrar, mailer, orders, jobs, dns, mail, accounts, alert, push };

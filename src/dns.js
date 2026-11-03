@@ -122,6 +122,11 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     await save(userId, name, { type: 'TXT', name: '@', value, ttl: 3600, managed: true, role: 'OWNERSHIP' });
   }
 
+  /** Le TXT de propriété est-il visible dans le DNS public (premier résolveur) ? Sert à dire au client si sa vérification a une chance d'aboutir. */
+  async function txtVisible(name, value) {
+    try { return (await resolve(cfg.dns.resolvers[0], name, 'TXT')).some((a) => a.join('') === value); } catch (e) { return false; }
+  }
+
   /** Santé de la zone (même logique que le frontend). */
   function health(records) {
     const has = (p) => records.some(p);
@@ -196,7 +201,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     return { connected: true, missing: [] };
   }
 
-  return { list, save, remove, autofix, ensureOwnership, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
+  return { list, save, remove, autofix, ensureOwnership, txtVisible, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
 }
 
 module.exports = { createDns, MAIL_TEMPLATE, validateRecord };

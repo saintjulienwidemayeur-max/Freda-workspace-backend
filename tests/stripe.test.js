@@ -23,6 +23,8 @@ test('carte : Checkout hébergé avec carte enregistrée pour plus tard, montant
   assert.strictEqual(c.f['line_items[0][price_data][unit_amount]'], '1299', 'prix serveur (12,99 $) en cents, pas le 0,01 du navigateur');
   assert.strictEqual(c.f['payment_intent_data[setup_future_usage]'], 'off_session');
   assert.strictEqual(c.idem, 'cs-' + r.reference, 'clé d’idempotence = référence');
+  assert.ok(c.f.success_url.includes('payment=success') && c.f.success_url.includes('order=' + r.orderId), 'retour Stripe : la page sait quelle commande confirmer');
+  assert.ok(c.f.cancel_url.includes('payment=cancelled') && c.f.cancel_url.includes('order=' + r.orderId));
   assert.strictEqual(t.stripe.calls.filter((x) => x.path === '/v1/customers').length, 1);
   assert.ok(!t.ns.calls.some((x) => x.op === 'registerDomain'), 'rien n’est acheté avant le paiement');
   assert.strictEqual((await t.user('/api/payment-methods', { method: 'POST', body: { type: 'card', number: '4242424242424242' } })).status, 400, 'jamais de numéro de carte via notre API');

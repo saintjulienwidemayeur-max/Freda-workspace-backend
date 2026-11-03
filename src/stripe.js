@@ -81,22 +81,22 @@ function createStripe({ cfg, db, log }) {
     return mid;
   }
 
-  async function createCheckout({ amount, reference, userId, label }) {
+  async function createCheckout({ amount, reference, userId, label, orderId }) {
     const customer = await customerFor(userId);
     const s = await api('POST', '/v1/checkout/sessions', {
       mode: 'payment', customer, client_reference_id: reference, payment_method_types: ['card'],
       line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: cents(amount), product_data: { name: label || 'Freda Workspace' } } }],
       payment_intent_data: { setup_future_usage: 'off_session', metadata: { reference } },
       metadata: { reference },
-      success_url: `${cfg.appUrl}/espace/facturation.html?payment=success&ref=${encodeURIComponent(reference)}`,
-      cancel_url: `${cfg.appUrl}/espace/facturation.html?payment=cancelled&ref=${encodeURIComponent(reference)}`,
+      success_url: `${cfg.appUrl}/espace/facturation.html?payment=success&order=${encodeURIComponent(orderId || '')}`,
+      cancel_url: `${cfg.appUrl}/espace/facturation.html?payment=cancelled&order=${encodeURIComponent(orderId || '')}`,
       expires_at: Math.floor(Date.now() / 1000) + 2 * 3600,
     }, { idem: 'cs-' + reference });
     return { status: 'pending', providerRef: s.id, redirectUrl: s.url, amountCents: cents(amount) };
   }
 
   /** Prélèvement sans action du client sur une carte enregistrée. `allowRedirect` : en cas d'authentification exigée, bascule vers Checkout (achat initié par le client). */
-  async function chargeSaved({ amount, reference, userId, methodId, label, allowRedirect }) {
+  async function chargeSaved({ amount, reference, userId, methodId, label, allowRedirect, orderId }) {
     const m = db.get("SELECT * FROM payment_methods WHERE id = ? AND user_id = ? AND type = 'card' AND stripe_pm <> ''", methodId, userId);
     if (!m) throw new HttpError(404, 'Carte enregistrée introuvable.', 'not_found');
     const customer = await customerFor(userId);
@@ -107,7 +107,7 @@ function createStripe({ cfg, db, log }) {
     } catch (e) {
       if (!(e instanceof StripeError)) throw e;
       const needsAuth = e.code === 'authentication_required' || e.code === 'requires_action' || e.paymentIntent && e.paymentIntent.status === 'requires_action';
-      if (needsAuth && allowRedirect) return createCheckout({ amount, reference, userId, label });
+      if (needsAuth && allowRedirect) return createCheckout({ amount, reference, userId, label, orderId });
       if (e.status >= 500) throw e;
       const err = new Error(needsAuth ? 'Votre banque demande une authentification : payez depuis votre espace client.' : 'Carte refusée par la banque. Essayez une autre carte ou MonCash.');
       err.name = 'CardDeclined'; err.code = e.code; throw err;
