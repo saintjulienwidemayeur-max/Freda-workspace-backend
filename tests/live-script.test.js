@@ -19,7 +19,7 @@ test('script de test réel : tout réussit contre un serveur conforme, la boîte
   t.pmState.domains.push('test.example');
   const r = await run(t, ['--yes', '--deliver']);
   assert.strictEqual(r.code, 0, r.out);
-  assert.strictEqual((r.out.match(/^PASS /gm) || []).length, 10, r.out);
+  assert.strictEqual((r.out.match(/^PASS /gm) || []).length, 13, r.out);
   assert.ok(!/FAIL/.test(r.out));
   assert.match(r.out, /Toutes les vérifications ont réussi/);
   assert.strictEqual(t.pmState.users.length, 0, 'boîte jetable supprimée');

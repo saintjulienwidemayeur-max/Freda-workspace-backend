@@ -12,6 +12,7 @@ const crypto = require('crypto');
 const { HttpError } = require('./errors');
 const { templates } = require('./mailer');
 const { imapLogin } = require('./imap');
+const { issueMailboxToken } = require('./auth');
 
 const LOCAL = /^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
 /** Mot de passe de la boîte choisi par le client : 10 à 128 caractères, ni l'adresse ni sa partie locale. */
@@ -41,6 +42,8 @@ function createPurelymail(cfg, log) {
     createUser: ({ local, domain, password }) => call('createUser', { userName: local, domainName: domain, password, enablePasswordReset: false, enableSearchIndexing: true, sendWelcomeEmail: false }),
     /** modifyUser : nouveau mot de passe et/ou nouveau nom (renommer change l'identifiant de connexion IMAP/SMTP/webmail, donc invalide aussi les mots de passe d'application). */
     modifyUser: ({ local, domain, newLocal, password }) => call('modifyUser', { userName: `${local}@${domain}`, ...(newLocal ? { newUserName: `${newLocal}@${domain}` } : {}), ...(password ? { newPassword: password } : {}) }),
+    createAppPassword: async ({ local, domain, name }) => String((await call('createAppPassword', { userHandle: `${local}@${domain}`, name })).appPassword || ''),
+    deleteAppPassword: ({ local, domain, appPassword }) => call('deleteAppPassword', { userName: `${local}@${domain}`, appPassword }),
     async findRules({ domain, local, target }) {
       const rules = (await call('listRoutingRules', {})).rules || [];
       return rules.filter((r) => String(r.domainName).toLowerCase() === domain && r.matchUser === local && !r.prefix && !r.catchall && (!target || (r.targetAddresses || []).includes(target)));
@@ -123,6 +126,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
       await pm.deleteUser({ local: providerLocal(b), domain: b.domain });
     }
     db.tx(() => {
+      db.run('DELETE FROM push_devices WHERE mailbox_id = ?', b.id); db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', b.id);
       for (const a of db.all('SELECT * FROM aliases WHERE user_id = ? AND to_addr = ?', userId, b.address)) db.run('DELETE FROM aliases WHERE id = ?', a.id);
       db.run('DELETE FROM mailboxes WHERE id = ?', b.id);
     });
@@ -185,7 +189,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
       try {
         const alias = renameMode ? 'susp-' + crypto.randomBytes(5).toString('hex') : '';
         if (pm.enabled) await pm.modifyUser({ local: b.local_part, domain: b.domain, newLocal: alias || undefined, password: alias ? undefined : secret() });
-        db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ? WHERE id = ?", alias, alias ? 'pending' : '', b.id);
+        db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ?, tokens_valid_after = ? WHERE id = ?", alias, alias ? 'pending' : '', Date.now(), b.id);
         suspended++;
       } catch (e) { failed++; log('warn', 'mailbox_suspend_failed', { mailbox: b.address }); }
     }
@@ -227,6 +231,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     const pw = validatePassword(password, b.local_part);
     await pm.modifyUser({ local: b.local_part, domain: b.domain, password: pw });
+    db.run('UPDATE mailboxes SET tokens_valid_after = ? WHERE id = ?', Date.now(), b.id);   // les sessions de l'application sont déconnectées
     db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'key-round', `Mot de passe de ${b.address} modifié`, now());
     return { ok: true };
   }
@@ -261,7 +266,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     }
     failures.delete(address);
     db.run('UPDATE mailboxes SET last_login = ? WHERE id = ?', new Date().toISOString(), b.id);
-    return { mailbox: { address: b.address, name: b.name, status: 'active' }, ...connection() };
+    return { mailbox: { address: b.address, name: b.name, status: 'active' }, token: issueMailboxToken(cfg, b), tokenExpiresInDays: cfg.push.sessionDays, ...connection() };
   }
 
   /** Réglages IMAP / SMTP publiés par Purelymail (https://purelymail.com/docs/setup/technical). */
@@ -270,7 +275,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     smtp: { host: 'smtp.purelymail.com', port: 465, security: 'ssl', alternative: { port: 587, security: 'starttls' } },
   });
 
-  return { listBoxes, listAliases, connection, changePassword, appLogin, validatePassword, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
+  return { listBoxes, listAliases, connection, changePassword, appLogin, validatePassword, provider: pm, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };

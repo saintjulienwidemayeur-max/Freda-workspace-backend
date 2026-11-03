@@ -6,7 +6,7 @@ const { HttpError } = require('./src/errors');
 const { createClient } = require('./src/namesilo');
 const { createPriceBook } = require('./src/pricing');
 const { createPayments } = require('./src/payments');
-const { createAuthenticator } = require('./src/auth');
+const { createMailboxAuthenticator, createAuthenticator } = require('./src/auth');
 const { createMailer } = require('./src/mailer');
 const { createAlerts } = require('./src/alerts');
 const { createAccounts } = require('./src/accounts');
@@ -16,6 +16,8 @@ const { createMail } = require('./src/mail');
 const { createVault } = require('./src/vault');
 const { createSubscription } = require('./src/subscription');
 const { verifySignature } = require('./src/stripe');
+const { createPush } = require('./src/push');
+const { createSenders } = require('./src/push-senders');
 const { createOrders } = require('./src/orders');
 const { createJobs } = require('./src/jobs');
 const { createWorkspace } = require('./src/workspace');
@@ -57,6 +59,8 @@ function createApp(deps) {
   const workspace = createWorkspace({ db, accounts, dns, mail });
   const settings = createDomainSettings({ db, registrar, mailer, alert, log: logger, cfg });
   const authenticate = createAuthenticator(cfg, db);
+  const authenticateMailbox = createMailboxAuthenticator(cfg, db);
+  const push = createPush({ cfg, db, log: logger, vault, mail, senders: deps.pushSenders || createSenders(cfg), debounceMs: deps.pushDebounceMs });
 
   const L = { search: createLimiter(60, 60_000), auth: createLimiter(12, 60_000), buy: createLimiter(10, 60_000), write: createLimiter(120, 60_000), errors: createLimiter(20, 60_000) };
 
@@ -149,6 +153,11 @@ function createApp(deps) {
   route('GET', '/api/mail/config', async () => mail.connection(), auth);
   /* Connexion de l'application mobile : adresse pro + mot de passe de la boîte (public, limité par IP et par adresse) */
   route('POST', '/api/mail/login', async (c) => { limit(L.auth, c.ip); return mail.appLogin(await c.body(2048)); });
+  /* Notifications push : session de BOÎTE (jeton renvoyé par /api/mail/login), jamais de session de compte */
+  const mbx = { mailbox: true };
+  route('GET', '/api/mail/push', async (c) => ({ ios: push.enabled('ios'), android: push.enabled('android'), devices: db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', c.mailbox.id).n }), mbx);
+  route('POST', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return push.register(c.mailbox, await c.body(4096)); }, mbx);
+  route('DELETE', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return push.unregister(c.mailbox, c.url.searchParams.get('token') || (await c.body(4096)).token); }, mbx);
   route('POST', '/api/mailboxes/:id/password', async (c, p) => { limit(L.auth, c.user.id); return mail.changePassword(c.user.id, p[0], (await c.body(2048)).password); }, auth);
   route('DELETE', '/api/mailboxes/:id', async (c, p) => mail.removeBox(c.user.id, p[0]), auth);
   route('POST', '/api/aliases', async (c) => mail.addAlias(c.user.id, await c.body()), auth);
@@ -193,6 +202,7 @@ function createApp(deps) {
         if (!cfg.adminToken || !m || !tokenEq(m[1], cfg.adminToken)) throw new HttpError(401, 'Accès administrateur requis.', 'unauthorized');
       }
       if (matched.opts.auth) ctx.user = authenticate(req);
+      if (matched.opts.mailbox) ctx.mailbox = authenticateMailbox(req);
       const out = await matched.handler(ctx, params);
       if (out && out.redirect) { res.writeHead(302, { Location: out.redirect, 'Cache-Control': 'no-store', ...cors }); return res.end(); }
       return send(200, out);
@@ -202,7 +212,7 @@ function createApp(deps) {
       send(status, { message: status >= 500 && !(e instanceof HttpError) ? 'Erreur interne.' : e.message, code: e.code });
     }
   });
-  server.app = { db, registrar, mailer, orders, jobs, dns, mail, accounts, alert };
+  server.app = { db, registrar, mailer, orders, jobs, dns, mail, accounts, alert, push };
   return server;
 }
 
@@ -212,6 +222,7 @@ if (require.main === module) {
   if (problems.length) { problems.forEach((p) => log('fatal', p)); process.exit(1); }
   const app = createApp({ cfg });
   app.app.jobs.start(); app.app.jobs.startSweeper();
+  app.app.push.start().catch((e) => log('error', 'push_start_failed', { message: e.message }));
   app.listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.mode, payments: cfg.payments.provider, mailer: cfg.mailer.provider }));
   const stop = () => { app.app.jobs.stop(); app.close(() => { app.app.db.close(); process.exit(0); }); setTimeout(() => process.exit(0), 5000).unref(); };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);

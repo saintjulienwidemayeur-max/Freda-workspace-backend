@@ -89,6 +89,18 @@ const MIGRATIONS = [
   `
   DROP TABLE IF EXISTS devices;
   `,
+  /* 7 — notifications push : jetons d'appareil, identifiant de surveillance IMAP par boîte (chiffré), invalidation des sessions de boîte */
+  `
+  CREATE TABLE push_devices (
+    id TEXT PRIMARY KEY, mailbox_id TEXT NOT NULL REFERENCES mailboxes(id), platform TEXT NOT NULL, token TEXT NOT NULL, created_at TEXT NOT NULL,
+    UNIQUE (mailbox_id, platform, token)
+  );
+  CREATE INDEX push_devices_mailbox ON push_devices(mailbox_id);
+  CREATE TABLE push_credentials (
+    mailbox_id TEXT PRIMARY KEY REFERENCES mailboxes(id), secret_enc TEXT NOT NULL, created_at TEXT NOT NULL, last_uid INTEGER
+  );
+  ALTER TABLE mailboxes ADD COLUMN tokens_valid_after INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 function openDb(file) {

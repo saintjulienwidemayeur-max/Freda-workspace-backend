@@ -9,6 +9,10 @@ const PLANS = {
   enterprise: { id: 'enterprise', name: 'Enterprise', monthly: 30, mailboxes: Infinity, perBoxGb: 5 },
 };
 
+/** Valeurs multi-lignes en variable d'environnement : accepte le texte brut (avec \n littéraux) ou sa version base64. */
+const pem = (v) => { const t = String(v || '').trim(); if (!t) return ''; const raw = t.includes('BEGIN') ? t : Buffer.from(t, 'base64').toString('utf8'); return raw.replace(/\\n/g, '\n'); };
+const json = (v) => { const t = String(v || '').trim(); if (!t) return null; try { return JSON.parse(t.startsWith('{') ? t : Buffer.from(t, 'base64').toString('utf8')); } catch (e) { return { invalid: true }; } };
+
 function loadConfig(env = process.env) {
   const nodeEnv = env.NODE_ENV || 'development';
   // NameSilo ne fournit pas toujours de sandbox : on travaille avec la vraie API en lecture seule.
@@ -51,6 +55,13 @@ function loadConfig(env = process.env) {
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
     dataKey: env.DATA_KEY || '',
+    push: {
+      preview: env.PUSH_PREVIEW === 'true',                       // true : expéditeur + objet dans la notification (transitent par Apple/Google) ; défaut : « Nouveau message » seulement
+      apns: { key: pem(env.APNS_KEY), keyId: env.APNS_KEY_ID || '', teamId: env.APNS_TEAM_ID || '', bundleId: env.APNS_BUNDLE_ID || '',
+        baseUrl: env.APNS_BASE_URL || (env.APNS_ENV === 'sandbox' ? 'https://api.sandbox.push.apple.com' : 'https://api.push.apple.com') },
+      fcm: { serviceAccount: json(env.FCM_SERVICE_ACCOUNT), baseUrl: env.FCM_BASE_URL || 'https://fcm.googleapis.com' },
+      sessionDays: Number(env.MAIL_SESSION_DAYS) || 30,
+    },
     imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
     purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0', suspendMode: env.MAIL_SUSPEND_MODE === 'password' ? 'password' : 'rename' },
     dns: { resolvers: list(env.DNS_RESOLVERS, '8.8.8.8,1.1.1.1,9.9.9.9,208.67.222.222') },
@@ -71,6 +82,10 @@ function assertSafe(cfg) {
   if (cfg.payments.stripe.secretKey && !cfg.payments.stripe.webhookSecret) errors.push('STRIPE_WEBHOOK_SECRET (whsec_…) requis avec STRIPE_SECRET_KEY : sans webhook signé, les paiements par carte ne seraient confirmés que par balayage.');
   if (cfg.nodeEnv === 'production' && /^sk_test_/.test(cfg.payments.stripe.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Stripe de TEST avec NAMESILO_MODE=live : les achats réels seraient payés avec de fausses cartes.');
   if (cfg.nodeEnv === 'production' && cfg.purelymail.apiKey && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe de boîte choisis par les clients pendant l’exécution de leur commande.');
+  const { apns, fcm } = cfg.push;
+  if ((apns.key || apns.keyId || apns.teamId || apns.bundleId) && !(apns.key && apns.keyId && apns.teamId && apns.bundleId)) errors.push('APNS_KEY, APNS_KEY_ID, APNS_TEAM_ID et APNS_BUNDLE_ID vont ensemble (notifications iPhone).');
+  if (fcm.serviceAccount && (fcm.serviceAccount.invalid || !fcm.serviceAccount.private_key || !fcm.serviceAccount.client_email || !fcm.serviceAccount.project_id)) errors.push('FCM_SERVICE_ACCOUNT invalide (JSON de compte de service Firebase avec private_key, client_email, project_id).');
+  if ((cfg.push.apns.key || cfg.push.fcm.serviceAccount) && !cfg.purelymail.apiKey) errors.push('Les notifications push exigent PURELYMAIL_API_KEY (identifiant de surveillance par boîte).');
   if (cfg.mailer.provider === 'brevo' && !cfg.mailer.brevoKey) errors.push('BREVO_API_KEY requise avec MAILER=brevo.');
   if (cfg.nodeEnv === 'production' && cfg.mailer.provider === 'console') errors.push('MAILER=console en production : aucun e-mail (reçus, réinitialisation de mot de passe) ne partirait.');
   if (cfg.namesilo.nameservers.length === 1) errors.push('NAMESERVERS doit contenir au moins 2 serveurs (règle NameSilo).');

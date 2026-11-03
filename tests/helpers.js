@@ -129,6 +129,18 @@ async function fakePurelymail(state) {
         }
         if (b.newPassword) state.passwords[b.newUserName || b.userName] = b.newPassword;
         return json(res, 200, { type: 'success', result: {} });
+      case 'createAppPassword': {
+        if (!str(b.userHandle) || !b.userHandle.includes('@')) return bad(res, 'createAppPassword: userHandle = adresse complète');
+        if (!state.users.includes(b.userHandle)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user' });
+        state.appSeq = (state.appSeq || 0) + 1; const pw = `app-pw-${state.appSeq}-xxxxxxxx`;
+        (state.appPasswords[b.userHandle] = state.appPasswords[b.userHandle] || []).push(pw);
+        return json(res, 200, { type: 'success', result: { appPassword: pw } });
+      }
+      case 'deleteAppPassword': {
+        const list = state.appPasswords[b.userName] || [];
+        if (!str(b.userName) || !list.includes(b.appPassword)) return json(res, 200, { type: 'error', code: 'notFound', message: 'unknown app password' });
+        state.appPasswords[b.userName] = list.filter((x) => x !== b.appPassword); return json(res, 200, { type: 'success', result: {} });
+      }
       case 'deleteUser':
         if (!str(b.userName) || !b.userName.includes('@')) return bad(res, 'deleteUser: userName = adresse complète');
         if (!state.users.includes(b.userName)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user' });
@@ -156,23 +168,46 @@ async function fakeImap(pmState) {
   const net = require('net');
   const calls = [];
   pmState.inbox = pmState.inbox || {};
+  pmState.sessions = pmState.sessions || {};        // utilisateur -> nombre de connexions IMAP authentifiées ouvertes
+  pmState.listeners = pmState.listeners || {};      // utilisateur -> fonctions appelées à l'arrivée d'un message (IDLE)
+  const nextUid = (u) => (pmState.inbox[u] || []).reduce((m, x) => Math.max(m, x.uid || 0), 0) + 1;
+  /** Dépose un message dans la boîte d'un utilisateur (livraison) et réveille les connexions IDLE. */
+  pmState.addMail = (user, { subject = 'Sujet', from = 'Expéditeur <exp@example.org>' } = {}) => {
+    const box = (pmState.inbox[user] = pmState.inbox[user] || []);
+    const uid = nextUid(user); box.push({ uid, subject, from });
+    (pmState.listeners[user] || []).forEach((f) => f(box.length));
+    return uid;
+  };
   const server = net.createServer((sock) => {
     sock.setEncoding('utf8'); sock.write('* OK IMAP ready\r\n');
-    let buf = '', waitingCreds = false, authed = null;
-    sock.on('error', () => {});
+    let buf = '', waitingCreds = null, authed = null, idleTag = null, listener = null;
+    const drop = () => { if (listener) { pmState.listeners[authed] = (pmState.listeners[authed] || []).filter((f) => f !== listener); listener = null; } if (authed) { pmState.sessions[authed] = Math.max(0, (pmState.sessions[authed] || 1) - 1); authed = null; } };
+    sock.on('error', () => {}); sock.on('close', drop);
     sock.on('data', (d) => {
       buf += d; let i;
       while ((i = buf.indexOf('\r\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 2);
         if (pmState.imapDown) return sock.destroy();
         let m;
-        if (/^a1 AUTHENTICATE PLAIN$/i.test(line)) { waitingCreds = true; sock.write('+ \r\n'); }
+        if ((m = /^(\w+) AUTHENTICATE PLAIN$/i.exec(line))) { waitingCreds = m[1]; sock.write('+ \r\n'); }
         else if (waitingCreds) {
-          waitingCreds = false;
+          const tag = waitingCreds; waitingCreds = null;
           const [, user, pass] = Buffer.from(line, 'base64').toString('utf8').split('\0');
           calls.push({ user, pass });
-          if (pmState.login(user, pass)) { authed = user; sock.write('a1 OK Authenticated\r\n'); } else sock.write('a1 NO [AUTHENTICATIONFAILED] bad credentials\r\n');
-        } else if ((m = /^(\w+) SELECT/i.exec(line))) sock.write(`* 0 EXISTS\r\n${m[1]} OK [READ-WRITE] done\r\n`);
+          if (pmState.login(user, pass)) { authed = user; pmState.sessions[user] = (pmState.sessions[user] || 0) + 1; sock.write(`${tag} OK Authenticated\r\n`); } else sock.write(`${tag} NO [AUTHENTICATIONFAILED] bad credentials\r\n`);
+        } else if (idleTag && /^DONE$/i.test(line)) { sock.write(`${idleTag} OK IDLE terminated\r\n`); idleTag = null; pmState.listeners[authed] = (pmState.listeners[authed] || []).filter((f) => f !== listener); listener = null; }
+        else if ((m = /^(\w+) SELECT/i.exec(line))) sock.write(`* ${(pmState.inbox[authed] || []).length} EXISTS\r\n* OK [UIDNEXT ${nextUid(authed)}] Predicted next UID\r\n${m[1]} OK [READ-WRITE] done\r\n`);
+        else if ((m = /^(\w+) STATUS INBOX/i.exec(line))) sock.write(`* STATUS "INBOX" (UIDNEXT ${nextUid(authed)})\r\n${m[1]} OK done\r\n`);
+        else if ((m = /^(\w+) IDLE$/i.exec(line))) {
+          idleTag = m[1]; sock.write('+ idling\r\n');
+          listener = (count) => sock.write(`* ${count} EXISTS\r\n`);
+          (pmState.listeners[authed] = pmState.listeners[authed] || []).push(listener);
+        }
+        else if ((m = /^(\w+) UID FETCH (\d+) /i.exec(line))) {
+          const msg = (pmState.inbox[authed] || []).find((x) => x.uid === Number(m[2])) || { from: '', subject: '' };
+          const hdr = `From: ${msg.from}\r\nSubject: ${msg.subject}\r\n\r\n`;
+          sock.write(`* 1 FETCH (UID ${m[2]} BODY[HEADER.FIELDS (FROM SUBJECT)] {${Buffer.byteLength(hdr)}}\r\n${hdr})\r\n${m[1]} OK done\r\n`);
+        }
         else if ((m = /^(\w+) SEARCH SUBJECT "(.*)"$/i.exec(line))) {
           const hits = (pmState.inbox[authed] || []).map((x, n) => (x.subject === m[2] ? n + 1 : 0)).filter(Boolean);
           sock.write(`${hits.length ? '* SEARCH ' + hits.join(' ') + '\r\n' : '* SEARCH\r\n'}${m[1]} OK done\r\n`);
@@ -181,7 +216,7 @@ async function fakeImap(pmState) {
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  closers.push(() => { server.close(); });
+  closers.push(() => { server.closeAllConnections && server.closeAllConnections(); server.close(); });
   return { calls, port: server.address().port };
 }
 
@@ -200,7 +235,7 @@ async function fakeSmtp(pmState) {
           const k = buf.indexOf('\r\n.\r\n'); if (k < 0) return;
           const body = buf.slice(0, k); buf = buf.slice(k + 5); data = null;
           const subject = (/^Subject: (.*)$/m.exec(body) || [])[1] || '';
-          (pmState.inbox[rcpt] = pmState.inbox[rcpt] || []).push({ subject }); sock.write('250 queued\r\n'); continue;
+          pmState.addMail(rcpt, { subject }); sock.write('250 queued\r\n'); continue;
         }
         const i = buf.indexOf('\r\n'); if (i < 0) return;
         const line = buf.slice(0, i); buf = buf.slice(i + 2); let m;
@@ -294,7 +329,7 @@ async function setup(over = {}) {
   const base = await listen(app);
   const api = (path, opts = {}) => fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.as ? { 'X-Demo-User': opts.as } : {}), ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined, redirect: opts.redirect || 'follow' });
   const as = (email = 'paul@example.com') => (path, opts = {}) => api(path, { ...opts, as: email });
-  closers.push(() => { app.closeAllConnections(); app.close(); try { app.app.db.close(); } catch (e) { /* déjà fermée */ } });
+  closers.push(() => { try { app.app.push.stop(); } catch (e) { /* déjà arrêté */ } app.closeAllConnections(); app.close(); try { app.app.db.close(); } catch (e) { /* déjà fermée */ } });
   return { api, as, user: as(), state, ns, paym, pm, pmState, imap, smtp, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
 }
 

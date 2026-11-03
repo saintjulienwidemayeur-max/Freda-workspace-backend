@@ -11,7 +11,9 @@
  *   1. la clé et le domaine ; 2. createUser ; 3. connexion IMAP AUTHENTICATE PLAIN (bon / mauvais mot de passe) ;
  *   4. suspension = renommage : l'ancienne adresse est refusée, le mot de passe n'a pas changé ;
  *   5. règle de routage créée puis retrouvée (listRoutingRules) ; 6. réactivation : mêmes identifiants refonctionnent ;
- *   7. changement de mot de passe ; 8. (--deliver) le courrier envoyé à l'ancienne adresse arrive bien dans la boîte renommée.
+ *   7. changement de mot de passe ; 8. (--deliver) le courrier envoyé à l'ancienne adresse arrive bien dans la boîte renommée ;
+ *   9. notifications push : createAppPassword (identifiant de surveillance) accepté en IMAP, (--deliver) l'observateur IMAP IDLE détecte un nouveau message,
+ *      deleteAppPassword révoque l'identifiant.
  */
 const crypto = require('crypto');
 const net = require('net');
@@ -19,6 +21,7 @@ const tls = require('tls');
 const { loadConfig } = require('../src/config');
 const { createPurelymail } = require('../src/mail');
 const { imapLogin } = require('../src/imap');
+const { watchMailbox } = require('../src/push');
 
 const args = process.argv.slice(2);
 const hex = (n) => crypto.randomBytes(n).toString('hex');
@@ -110,6 +113,26 @@ async function smtpSend(smtp, { user, pass, from, to, subject }) {
     });
     await check('connexion IMAP : mauvais mot de passe refusé', async () => { must((await login(addr, WRONG)) === 'denied', 'accepté à tort'); });
 
+    let appPw = '';
+    await check('push : createAppPassword (identifiant de surveillance) accepté par IMAP', async () => {
+      appPw = await pm.createAppPassword({ local, domain, name: 'Freda push (test)' });
+      must(appPw, 'aucun mot de passe d’application renvoyé');
+      let r; for (let i = 0; i < 4 && r !== 'ok'; i++) { r = await login(addr, appPw); if (r !== 'ok') await sleep(1500); }
+      must(r === 'ok', 'IMAP refuse le mot de passe d’application (portées IMAP non accordées par défaut ?)');
+    });
+    if (args.includes('--deliver') && appPw) {
+      await check('push : l’observateur IMAP IDLE détecte un nouveau message (avec l’identifiant de surveillance)', async () => {
+        let uid = null, got = null;
+        const w = watchMailbox({ imap: cfg.imap, user: addr, pass: appPw, preview: false, log: () => {}, getLastUid: () => uid, setLastUid: (u) => { uid = u; }, onNew: (i) => { got = i; }, onDenied: () => {} });
+        try {
+          await Promise.race([w.ready, sleep(20000).then(() => { throw new Error('l’observateur n’a pas atteint IDLE en 20 s (serveur sans IDLE / STATUS ?)'); })]);
+          await smtpSend(smtp, { user: addr, pass: PW1, from: addr, to: addr, subject: 'freda-push-' + hex(4) });
+          for (let i = 0; i < 12 && !got; i++) await sleep(2500);
+          must(got && got.count >= 1, 'aucune détection de nouveau message en 30 s (UIDNEXT / EXISTS ?)');
+        } finally { w.stop(); }
+      });
+    }
+
     await check('suspension par renommage (modifyUser newUserName) : l’ancienne adresse est refusée', async () => {
       await pm.modifyUser({ local, domain, newLocal: alias }); currentLocal = alias;
       must((await login(addr, PW1)) === 'denied', 'l’ancienne adresse fonctionne encore : le renommage ne bloque pas l’accès');
@@ -139,6 +162,13 @@ async function smtpSend(smtp, { user, pass, from, to, subject }) {
       await pm.modifyUser({ local: alias, domain, newLocal: local }); currentLocal = local;
       must((await login(addr, PW1)) === 'ok', 'ancienne adresse refusée après réactivation');
       must((await login(renamed, PW1)) === 'denied', 'le nom de suspension fonctionne encore');
+    });
+
+    await check('push : l’identifiant de surveillance suit la réactivation, puis deleteAppPassword le révoque', async () => {
+      if (!appPw) throw new Error('pas d’identifiant à tester (étape précédente en échec)');
+      must((await login(addr, appPw)) === 'ok', 'identifiant de surveillance refusé après réactivation (les mots de passe d’application ne suivent pas le renommage ?)');
+      await pm.deleteAppPassword({ local, domain, appPassword: appPw });
+      must((await login(addr, appPw)) === 'denied', 'mot de passe d’application encore accepté après révocation');
     });
 
     await check('changement de mot de passe (modifyUser newPassword) : ancien refusé, nouveau accepté', async () => {

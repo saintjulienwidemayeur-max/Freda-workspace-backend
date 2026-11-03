@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 106 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 123 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -33,7 +33,17 @@ Parcours : le client choisit **le mot de passe de sa boîte** sur la plateforme 
 3. Mot de passe oublié / changé : le titulaire du compte Freda utilise `POST /api/mailboxes/:id/password` `{ "password" }` (10–128 caractères) depuis son espace ; l'app redemande alors le nouveau mot de passe.
 
 Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-mail, jamais stocké** : validé avant le paiement, gardé chiffré (AES-256-GCM, `DATA_KEY`) le temps de la commande puis supprimé (aussi purgé si la commande échoue). Suspension : la boîte est renommée, **le mot de passe n'est pas touché** ; à la réactivation le client retrouve exactement ses identifiants, rien à ressaisir.
-**Pas de notifications push** : Apple a cassé IMAP IDLE et Purelymail n'a pas le certificat Apple ; un service push (IMAP IDLE côté serveur + APNs/FCM) reste à construire, et il faudra alors un jeton de session pour l'app.
+
+
+### Notifications push (nouveau message)
+Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purelymail n'a pas le certificat Apple (doc Purelymail) : l'app ne peut pas être prévenue seule.
+1. `POST /api/mail/login` renvoie aussi `token` : **session de boîte** (30 jours, `MAIL_SESSION_DAYS`), valable **uniquement** pour `/api/mail/push` (jamais pour le compte Freda ; un jeton de compte n'ouvre pas ces routes). Elle est révoquée si le mot de passe de la boîte change ou si la boîte est suspendue : l'app se reconnecte avec l'adresse + mot de passe.
+2. `GET /api/mail/push` → `{ ios, android, devices }` (plateformes configurées côté serveur). `POST /api/mail/push` `{ "platform": "ios" | "android", "token": "<jeton APNs hexadécimal | jeton FCM>" }` enregistre l'appareil. `DELETE /api/mail/push?token=…` le retire. Un téléphone ne notifie qu'un compte à la fois ; 20 appareils par boîte.
+3. Côté serveur : un mot de passe d'application Purelymail « Freda push » **par boîte** (jamais le mot de passe du client, chiffré avec `DATA_KEY`, révoqué quand le dernier appareil part) et un observateur **IMAP IDLE** par boîte active qui a un appareil. Il compare `UIDNEXT` au dernier UID notifié : **pas de doublon, rattrapage après redémarrage**, rien pour une suppression. Rafales regroupées. Réconciliation toutes les 60 s : suspension / réactivation / suppression sont prises en compte (la suspension arrête l'observateur ; la réactivation le relance sans réinscription).
+4. Contenu : `title: "Nouveau message"` (ou « N nouveaux messages »), `body: <adresse de la boîte>`, `data: { kind: "new_mail", mailbox, count }`. **Aucun expéditeur ni objet** par défaut ; `PUSH_PREVIEW=true` les ajoute (ils transitent alors par Apple / Google). Les jetons morts (APNs 410 / `BadDeviceToken`, FCM `UNREGISTERED`) sont supprimés.
+5. Configuration : iPhone `APNS_KEY` (contenu du `.p8`, texte ou base64), `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, `APNS_ENV=sandbox|production` ; Android `FCM_SERVICE_ACCOUNT` (JSON du compte de service Firebase, texte ou base64). Une plateforme non configurée répond `503 push_not_configured`. À l'app de gérer côté appareil : permission de notification, canal Android `mail`, et récupération des messages en IMAP à l'ouverture sur `data.kind == "new_mail"`.
+6. Limites : **une seule instance** (une connexion IMAP par boîte surveillée, comme SQLite) ; la charge utile reste minimale par choix de confidentialité ; non testé avec de vrais APNs / FCM / Purelymail (voir ci-dessous le script de test réel, qui vérifie maintenant aussi `createAppPassword`, IDLE et la révocation).
+
 
 ## Sécurité
 - **Dry-run par défaut** : lectures NameSilo réelles, mais enregistrement/renouvellement/verrouillage/DNS **simulés**. Seule la valeur exacte `NAMESILO_MODE=live` achète pour de vrai.
