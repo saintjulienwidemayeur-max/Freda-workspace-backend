@@ -198,3 +198,14 @@ test('NameSilo répond 503 une fois : la vérification de disponibilité est ré
   assert.strictEqual(n, 2);
   assert.strictEqual(r.available[0].domain, 'a.com');
 });
+
+test('GET /api/domains/prices : mêmes prix de vente que la recherche, triés du moins cher au plus cher', async () => {
+  const t = await setup();
+  const p = await (await t.api('/api/domains/prices')).json();
+  assert.ok(p.tlds.length > 0);
+  assert.deepStrictEqual(p.tlds.map((x) => x.price), p.tlds.map((x) => x.price).slice().sort((a, b) => a - b));
+  const s = await (await t.api('/api/domains/search?q=exemple')).json();
+  const com = p.tlds.find((x) => x.tld === '.com');
+  assert.strictEqual(com.price, s.exact.price);
+  assert.strictEqual(com.renew, s.exact.renew);
+});

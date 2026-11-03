@@ -75,7 +75,13 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     return { line: { name: p.domain, tld: p.tld, price: Math.round(e.renew * years * 100) / 100, cost: Math.round(e.costRenew * years * 100) / 100 }, amount: Math.round(e.renew * years * 100) / 100 };
   }
 
-  return { search, quote, renewalQuote };
+  /** GET /domains/prices — tarifs de vente par extension (même source que la recherche), pour les suggestions de saisie. */
+  async function prices() {
+    const book = await loadBook();
+    return { tlds: Object.values(book).map((e) => ({ tld: e.tld, price: e.price, renew: e.renew })).sort((a, b) => a.price - b.price) };
+  }
+
+  return { search, quote, renewalQuote, prices };
 }
 
 module.exports = { createDomainCatalog };
