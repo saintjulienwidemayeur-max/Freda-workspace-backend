@@ -10,7 +10,7 @@
  *  - la notification ne contient par défaut que « Nouveau message » + l'adresse de la boîte (PUSH_PREVIEW=true ajoute expéditeur et objet : ils transitent
  *    alors par Apple / Google) ; les jetons morts (410 / UNREGISTERED) sont supprimés.
  * Réconciliation toutes les 60 s : observateurs démarrés / arrêtés selon les boîtes actives qui ont au moins un appareil (suspension, réactivation,
- * suppression sont donc prises en compte sans crochet). UNE instance (comme SQLite) : une connexion IMAP par boîte surveillée.
+ * suppression sont donc prises en compte sans crochet). UNE instance (état en mémoire : observateurs IMAP, limiteurs) : une connexion IMAP par boîte surveillée.
  */
 const crypto = require('crypto');
 const net = require('net');

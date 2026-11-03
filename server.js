@@ -56,7 +56,7 @@ function createApp(deps) {
   const orders = createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger });
   const subscription = createSubscription({ cfg, db, mailer });
   const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger });
-  const workspace = createWorkspace({ db, accounts, dns, mail });
+  const workspace = createWorkspace({ db, accounts, dns, mail, cfg });
   const settings = createDomainSettings({ db, registrar, mailer, alert, log: logger, cfg });
   const authenticate = createAuthenticator(cfg, db);
   const authenticateMailbox = createMailboxAuthenticator(cfg, db);

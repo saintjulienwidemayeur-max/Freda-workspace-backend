@@ -241,3 +241,13 @@ test('offre payée mais première boîte impossible à créer : le client et l�
   t.pmState.fail = false;
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'contact', domain: 'neuf.com' } })).status, 200, 'le client peut créer sa boîte ensuite sans repayer');
 });
+
+test('workspace : dnsConfig indique si les serveurs de noms Freda existent (sinon le frontend ne les propose pas)', async () => {
+  const t = await setup();
+  const w = await (await t.user('/api/workspace')).json();
+  assert.deepStrictEqual(w.dnsConfig, { nameservers: [], nameserversAvailable: false });
+  const t2 = await setup({ env: { NAMESERVERS: 'ns1.exemple.com,ns2.exemple.com' } });
+  const w2 = await (await t2.user('/api/workspace')).json();
+  assert.strictEqual(w2.dnsConfig.nameserversAvailable, true);
+  assert.deepStrictEqual(w2.dnsConfig.nameservers, ['ns1.exemple.com', 'ns2.exemple.com']);
+});

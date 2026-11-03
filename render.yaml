@@ -24,7 +24,7 @@ services:
       - key: API_URL
         value: https://api.fredaworkspace.com
       - key: ALLOWED_ORIGINS
-        value: https://fredaworkspace.com
+        value: https://fredaworkspace.com,https://www.fredaworkspace.com   # toute origine absente d'ici affiche « Failed to fetch » ; ajoutez l'URL *.onrender.com du site si vous l'utilisez
       - key: NAMESILO_MODE
         value: dry-run          # passer à live seulement quand Pay'm est branché et testé
       - key: PAYMENTS_PROVIDER

@@ -1,10 +1,10 @@
 # Freda Workspace — Backend
 
-API Node.js (≥ 22.13, une seule dépendance d'exécution : `pg`) pour [Freda-workspace](https://github.com/saintjulienwidemayeur-max/Freda-workspace) : comptes, domaines (NameSilo), paiements MonCash/NatCash (Pay'm), DNS, Freda Mail (Purelymail), renouvellements, e-mails et alertes. Base de données PostgreSQL (Supabase).
+API Node.js (22.x, une seule dépendance d'exécution : `pg`) pour [Freda-workspace](https://github.com/saintjulienwidemayeur-max/Freda-workspace) : comptes, domaines (NameSilo), paiements MonCash/NatCash (Pay'm), DNS, Freda Mail (Purelymail), renouvellements, e-mails et alertes. Base de données PostgreSQL (Supabase).
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 152 tests, tous contre de faux serveurs et un vrai PostgreSQL local (PGlite) — aucun appel réel
+npm test                 # 162 tests, tous contre de faux serveurs et un vrai PostgreSQL local (PGlite) — aucun appel réel
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -53,6 +53,23 @@ Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purel
 - Montants jamais lus du navigateur ; commandes idempotentes (`Idempotency-Key`) ; exécution une seule fois (état `fulfilling` atomique) ; comptes isolés (chaque requête filtre sur l'utilisateur).
 - CORS restreint, corps ≤ 32 Ko, limitation de débit par IP/utilisateur, erreurs sans détail interne, aucun secret journalisé.
 
+## Variables d'environnement (référence)
+Toutes sont listées avec leur valeur par défaut dans `.env.example`. En plus de celles du tableau « obligatoires » ci-dessous :
+| Variable | Rôle | Défaut |
+|---|---|---|
+| `NODE_ENV` | `production` (garde-fous stricts) ou `staging` (essai) | – |
+| `PRICE_MARKUP_PERCENT`, `PRICE_MIN_MARKUP` | Marge sur le prix revendeur NameSilo, arrondi à x.99 | 35 / 1.5 |
+| `PRICE_COMPARE_PERCENT` | Prix « barré » affiché (affichage seulement, jamais facturé) ; 0 = aucun | 0 |
+| `PRICE_CACHE_MS` | Durée du cache des tarifs NameSilo | 6 h |
+| `DOMAIN_TLDS` | Extensions vendues (doivent exister chez NameSilo) | liste dans `.env.example` |
+| `MAX_YEARS` | Durée maximale d'un achat de domaine | 10 |
+| `NAMESILO_TIMEOUT_MS` | Délai d'un appel NameSilo | 20000 |
+| `DNS_RESOLVERS` | Résolveurs DNS pour la vérification | Google, Cloudflare, Quad9, OpenDNS |
+| `IMAP_HOST`, `IMAP_PORT`, `IMAP_SECURE` | Serveur IMAP Purelymail (connexion des boîtes) | imap.purelymail.com:993 |
+| `JOBS_INTERVAL_MS` | Période des tâches périodiques (renouvellements, suspensions) ; le balayage des paiements en attente tourne chaque minute | 6 h |
+| `DATABASE_POOL_MAX`, `DATABASE_CA` | Pool PostgreSQL, certificat CA | 10 / – |
+| `STRIPE_UI_MODE` | `embedded` (formulaire dans le site) ou `hosted` | embedded |
+
 ## À savoir / limites (honnêtement)
 1. **Pas de remboursement automatique Pay'm** : l'API ne renvoie pas le numéro du payeur. Un échec après paiement met la commande en `needs_attention` et déclenche une **alerte** : remboursement manuel (`GET /api/admin/orders`).
 2. **Cartes bancaires = Stripe** : sans `STRIPE_SECRET_KEY`, réponse `501`. Format d'erreur vérifié contre `api.stripe.com`, paramètres suivis d'après la documentation officielle, mais **aucun paiement réel n'a été fait** : tester en mode test (`sk_test_…`, carte `4242 4242 4242 4242`) puis déclarer le webhook. Les **domaines** sont aussi renouvelés automatiquement (1 an, tentatives à 7 j, 3 j et 1 j avant l'expiration, sauf si le client a désactivé le renouvellement automatique du domaine, si le domaine est en dry-run, ou si un paiement manuel est en cours) ; une banque exigeant 3-D Secure sur un prélèvement automatique fait échouer la tentative (le client est prévenu et paie depuis son espace).
@@ -67,6 +84,13 @@ Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purel
 11. Limitation de débit en mémoire (par instance).
 12. **Suspension par renommage** : les mots de passe d'application d'un utilisateur Purelymail le suivent lors d'un renommage ; ils cessent de fonctionner pour l'ancienne adresse et le nouveau nom aléatoire n'est jamais montré au client. Le comportement du renommage (messages conservés, règle de routage vers la boîte renommée, retour au nom d'origine) suit la spécification de l'API mais **n'a pas été testé avec un vrai compte Purelymail** : à vérifier avec une boîte jetable avant la production. Variable `MAIL_SUSPEND_MODE=password` pour revenir à un simple changement de mot de passe (ne révoque PAS les mots de passe d'application). Les alias qui pointent vers une boîte suspendue peuvent cesser de livrer pendant la suspension.
 
+## DNS : ce que le client doit faire, et ce que fait le backend
+- **Domaine acheté chez nous** : zone gérée par NameSilo. `POST /api/domains/:d/dns/autofix` ajoute les enregistrements manquants (MX, SPF, 3 DKIM, DMARC) et remplace un enregistrement géré incorrect du même type et nom (sauf TXT). Les changements sont poussés à NameSilo.
+- **Domaine existant, mode `records`** (le seul disponible sans `NAMESERVERS`) : le client ajoute lui-même chez son hébergeur DNS les 6 enregistrements du modèle **plus** le TXT de preuve de propriété (`purelymail_ownership_proof=…`, renvoyé par `GET /api/domains/:d/mail-ownership`). Il doit supprimer ses anciens MX et SPF (un seul SPF par domaine), et sur Cloudflare mettre les CNAME en « DNS only » (nuage gris). Rien n'est poussé chez un hébergeur externe.
+- **Vérification** (`POST /api/domains/:d/verify`) : en mode `records`, MX, SPF **et les 3 DKIM** doivent être présents ; la réponse liste ce qui manque (`missing`). DMARC n'est pas bloquant.
+- **Propagation** : souvent 15 minutes, parfois 24 à 48 h. Les résolveurs interrogés sont configurables avec `DNS_RESOLVERS` (défaut : Google, Cloudflare, Quad9, OpenDNS).
+- **`NAMESERVERS`** : à renseigner **uniquement** si ces serveurs de noms existent réellement (PowerDNS, Route 53…). Sinon laissez vide : le frontend ne propose alors que le mode `records`. Y pointer un domaine sans DNS autoritaire le met hors ligne.
+
 ## Test réel de Purelymail (boîte jetable)
 À lancer **depuis votre machine** (un domaine déjà ajouté et vérifié dans votre compte Purelymail, MX Purelymail en place pour `--deliver`) :
 ```bash
@@ -80,12 +104,23 @@ Crée `fredatest-xxxxxxxx@domaine`, vérifie avec notre propre code (adaptateur 
 3. Tests : `npm test` utilise PGlite (vrai PostgreSQL dans Node) ; `tests/db-pg.test.js` exerce le pilote `pg` réel via le protocole réseau.
 4. Nouvelle migration : ajoutez `migrations/00N_nom.sql` (ne modifiez jamais une migration déjà appliquée). Les tables créées par SQL sur Supabase ont RLS activé automatiquement ; gardez malgré tout `ENABLE ROW LEVEL SECURITY` dans la migration.
 
-## Premier achat réel (checklist)
-1. `node scripts/live-check.js` avec votre clé : solde, prix, marges (lecture seule).
-2. Dry-run complet depuis le site.
-3. Pay'm : un paiement de test (`PAYMENTS_PROVIDER=paym`, `NAMESILO_MODE=dry-run`) → la commande doit passer `completed`.
-4. Solde NameSilo ≈ 15 $, domaine bon marché, `NAMESILO_MODE=live` ; vérifier `order_amount`, WHOIS privé, verrou, DNS.
-5. Brancher `ALERT_WEBHOOK_URL` avant d'ouvrir au public.
+## Mise en production (checklist dans l'ordre)
+| # | Étape | Où cliquer / quoi faire |
+|---|---|---|
+| 1 | Base de données | Supabase > Project Settings > Database > Connection string > **Session pooler** → secret Render `DATABASE_URL` |
+| 2 | Secrets applicatifs | Render > service API > Environment : `JWT_SECRET`, `ADMIN_TOKEN`, `DATA_KEY` (`openssl rand -base64 48 / 32 / 32`). **Copiez `DATA_KEY` dans un gestionnaire de mots de passe** : la perdre rend illisibles les mots de passe de boîte en attente. Utilisez des secrets neufs, jamais ceux collés dans un chat ou un ticket. |
+| 3 | NameSilo | namesilo.com > Account Info > **API Manager** > générer une clé (pas « read-only ») → `NAMESILO_API_KEY`. Gardez `NAMESILO_MODE=dry-run` pour les tests. Alimentez le solde du compte (≈ 15 $ pour un premier achat). |
+| 4 | Brevo (e-mails) | Brevo > Senders, Domains & dedicated IPs > **authentifier `fredaworkspace.com`** (DKIM/DMARC) et valider l'expéditeur → `BREVO_API_KEY`, `MAILER=brevo`, `MAIL_FROM` |
+| 5 | Purelymail | purelymail.com > Account > **API** : créer une clé → `PURELYMAIL_API_KEY`. Test avec boîte jetable : `npm run live:purelymail` (voir plus bas). |
+| 6 | Stripe (cartes) | Stripe > Developers > API keys : clé restreinte `rk_live_…` → `STRIPE_SECRET_KEY`, clé publiable `pk_live_…` → `STRIPE_PUBLISHABLE_KEY` (même mode live pour les deux). Developers > Webhooks > ajouter `https://<votre-api>/api/webhooks/stripe` (événements `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`) → `STRIPE_WEBHOOK_SECRET` (`whsec_…`) |
+| 7 | Pay'm (MonCash / NatCash) | Tableau de bord Pay'm : `PAYM_CLIENT_ID`, `PAYM_CLIENT_SECRET`, `PAYMENTS_PROVIDER=paym`. Il n'y a pas de webhook Pay'm : le backend interroge Pay'm pour les commandes en attente (balayage chaque minute). Faire un premier paiement de test réel. |
+| 8 | Alertes | Slack/Discord/Teams > Incoming Webhook → `ALERT_WEBHOOK_URL` (échecs de paiement, de renouvellement, de création de boîte) |
+| 9 | Domaines et CORS | Render > Settings > Custom Domains : site (`fredaworkspace.com`, `www`) et API (`api.fredaworkspace.com`). `ALLOWED_ORIGINS=https://fredaworkspace.com,https://www.fredaworkspace.com` (sans `/` final), `APP_URL=https://fredaworkspace.com`, `API_URL=https://api.fredaworkspace.com`. Un site servi depuis une origine absente de `ALLOWED_ORIGINS` affiche « Failed to fetch ». |
+| 10 | Site | Render (site statique) : `FW_DEMO_MODE=false`, `FW_API_BASE=https://api.fredaworkspace.com/api` |
+| 11 | Dry-run complet | Depuis le site : recherche, panier, paiement de test, e-mail reçu |
+| 12 | Bascule | `NODE_ENV=production`, `NAMESILO_MODE=live`, `PAYMENTS_PROVIDER=paym` (ou Stripe), `MAILER=brevo`. Le serveur **refuse de démarrer** en production avec `NAMESILO_MODE=dry-run`, paiements `demo`, e-mails `console`, `DATA_KEY` ou `DATABASE_URL` manquants. |
+| 13 | Premier achat réel | Domaine bon marché ; vérifier `order_amount`, WHOIS privé, verrou, DNS ; lire la ligne `api_started` du journal (`integrations`) : tout doit être `true` sauf ce que vous n'utilisez pas. |
+| 14 | Après les tests | Faire pivoter (régénérer) tous les secrets utilisés pendant les tests. |
 
 ## Déploiement (Render)
 `render.yaml` déclare le service `freda-workspace-api` (base = Supabase, pas de disque). Renseignez les secrets, associez `api.fredaworkspace.com`, puis dans le frontend : `API_BASE: 'https://api.fredaworkspace.com/api'` et `DEMO_MODE: false`.
