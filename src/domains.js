@@ -81,7 +81,14 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     return { tlds: Object.values(book).map((e) => ({ tld: e.tld, price: e.price, renew: e.renew })).sort((a, b) => a.price - b.price) };
   }
 
-  return { search, quote, renewalQuote, prices };
+  /** Administration : coût NameSilo, prix de vente et marge par extension. */
+  async function priceTable() {
+    const book = await loadBook();
+    const r2 = (x) => Math.round(x * 100) / 100;
+    return { markupPercent: cfg.pricing.markupPercent, minMarkup: cfg.pricing.minMarkup, tlds: Object.values(book).map((e) => ({ tld: e.tld, cost: r2(e.cost), costRenew: r2(e.costRenew), price: e.price, renew: e.renew, margin: r2(e.price - e.cost), marginRenew: r2(e.renew - e.costRenew), marginPercent: Math.round((e.price - e.cost) / e.cost * 1000) / 10 })).sort((a, b) => a.cost - b.cost) };
+  }
+
+  return { search, quote, renewalQuote, prices, priceTable };
 }
 
 module.exports = { createDomainCatalog };

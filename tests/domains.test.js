@@ -209,3 +209,15 @@ test('GET /api/domains/prices : mêmes prix de vente que la recherche, triés du
   assert.strictEqual(com.price, s.exact.price);
   assert.strictEqual(com.renew, s.exact.renew);
 });
+
+test('GET /api/admin/domain-prices : coût NameSilo, prix de vente et marge — réservé à l’administrateur', async () => {
+  const t = await setup({ env: { ADMIN_TOKEN: 'a'.repeat(32) } });
+  assert.strictEqual((await t.api('/api/admin/domain-prices')).status, 401);
+  const r = await t.api('/api/admin/domain-prices', { headers: { Authorization: 'Bearer ' + 'a'.repeat(32) } });
+  assert.strictEqual(r.status, 200);
+  const com = (await r.json()).tlds.find((x) => x.tld === '.com');
+  assert.strictEqual(com.cost, 10);
+  const sold = await (await t.api('/api/domains/search?q=exemple')).json();
+  assert.strictEqual(com.price, sold.exact.price, 'le prix de vente affiché est celui de la recherche');
+  assert.strictEqual(com.margin, Math.round((com.price - 10) * 100) / 100);
+});
