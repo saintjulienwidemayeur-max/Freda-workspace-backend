@@ -88,7 +88,7 @@ async function fakePurelymail(state) {
   state.passwords = state.passwords || {};
   state.appPasswords = state.appPasswords || {};     // { 'user@domaine': ['mot de passe d’application'] } posés par les tests
   /** Modèle d'authentification : un utilisateur existe sous UN nom ; mot de passe principal OU mot de passe d'application de CE nom. */
-  state.login = (user, pass) => state.users.includes(user) && (state.passwords[user] === pass || (state.appPasswords[user] || []).includes(pass));
+  state.login = (user, pass) => (state.legacy && state.legacy[user] && !state.users.includes(user) ? state.login(state.legacy[user], pass) : false) || state.users.includes(user) && (state.passwords[user] === pass || (state.appPasswords[user] || []).includes(pass));
   /** Courrier entrant : utilisateur existant, sinon règle de routage exacte vers un utilisateur existant, sinon rejet. */
   state.deliver = (addr) => {
     if (state.users.includes(addr)) return addr;
@@ -122,6 +122,8 @@ async function fakePurelymail(state) {
         if (b.newUserName) {
           if (state.users.includes(b.newUserName)) return json(res, 200, { type: 'error', code: 'userExists', message: 'exists' });
           state.users[state.users.indexOf(b.userName)] = b.newUserName;
+          state.legacy = state.legacy || {}; delete state.legacy[b.newUserName];
+          if (state.keepOldName) state.legacy[b.userName] = b.newUserName;   // simule un serveur où le renommage ne bloque PAS l'ancienne adresse
           state.passwords[b.newUserName] = state.passwords[b.userName]; delete state.passwords[b.userName];
           state.appPasswords[b.newUserName] = state.appPasswords[b.userName] || []; delete state.appPasswords[b.userName];   // les mots de passe d'application suivent l'utilisateur
         }
@@ -153,28 +155,67 @@ async function fakePurelymail(state) {
 async function fakeImap(pmState) {
   const net = require('net');
   const calls = [];
+  pmState.inbox = pmState.inbox || {};
   const server = net.createServer((sock) => {
     sock.setEncoding('utf8'); sock.write('* OK IMAP ready\r\n');
-    let buf = '', waitingCreds = false;
+    let buf = '', waitingCreds = false, authed = null;
     sock.on('error', () => {});
     sock.on('data', (d) => {
       buf += d; let i;
       while ((i = buf.indexOf('\r\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 2);
         if (pmState.imapDown) return sock.destroy();
+        let m;
         if (/^a1 AUTHENTICATE PLAIN$/i.test(line)) { waitingCreds = true; sock.write('+ \r\n'); }
         else if (waitingCreds) {
           waitingCreds = false;
           const [, user, pass] = Buffer.from(line, 'base64').toString('utf8').split('\0');
           calls.push({ user, pass });
-          sock.write(pmState.login(user, pass) ? 'a1 OK Authenticated\r\n' : 'a1 NO [AUTHENTICATIONFAILED] bad credentials\r\n');
-        } else if (/^a2 LOGOUT/i.test(line)) { sock.write('* BYE\r\na2 OK\r\n'); sock.end(); }
+          if (pmState.login(user, pass)) { authed = user; sock.write('a1 OK Authenticated\r\n'); } else sock.write('a1 NO [AUTHENTICATIONFAILED] bad credentials\r\n');
+        } else if ((m = /^(\w+) SELECT/i.exec(line))) sock.write(`* 0 EXISTS\r\n${m[1]} OK [READ-WRITE] done\r\n`);
+        else if ((m = /^(\w+) SEARCH SUBJECT "(.*)"$/i.exec(line))) {
+          const hits = (pmState.inbox[authed] || []).map((x, n) => (x.subject === m[2] ? n + 1 : 0)).filter(Boolean);
+          sock.write(`${hits.length ? '* SEARCH ' + hits.join(' ') + '\r\n' : '* SEARCH\r\n'}${m[1]} OK done\r\n`);
+        } else if ((m = /^(\w+) LOGOUT/i.exec(line))) { sock.write(`* BYE\r\n${m[1]} OK\r\n`); sock.end(); }
       }
     });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   closers.push(() => { server.close(); });
   return { calls, port: server.address().port };
+}
+
+/** Faux SMTP (TCP simple) : AUTH PLAIN contrôlé par le modèle d'authentification, livraison via le modèle de routage du faux Purelymail. */
+async function fakeSmtp(pmState) {
+  const net = require('net');
+  pmState.inbox = pmState.inbox || {};
+  const server = net.createServer((sock) => {
+    sock.setEncoding('utf8'); sock.write('220 fake smtp\r\n');
+    let buf = '', data = null, rcpt = null;
+    sock.on('error', () => {});
+    sock.on('data', (d) => {
+      buf += d;
+      for (;;) {
+        if (data !== null) {
+          const k = buf.indexOf('\r\n.\r\n'); if (k < 0) return;
+          const body = buf.slice(0, k); buf = buf.slice(k + 5); data = null;
+          const subject = (/^Subject: (.*)$/m.exec(body) || [])[1] || '';
+          (pmState.inbox[rcpt] = pmState.inbox[rcpt] || []).push({ subject }); sock.write('250 queued\r\n'); continue;
+        }
+        const i = buf.indexOf('\r\n'); if (i < 0) return;
+        const line = buf.slice(0, i); buf = buf.slice(i + 2); let m;
+        if (/^EHLO/i.test(line)) sock.write('250 fake\r\n');
+        else if ((m = /^AUTH PLAIN (.+)$/i.exec(line))) { const [, u, p] = Buffer.from(m[1], 'base64').toString('utf8').split('\0'); sock.write(pmState.login(u, p) ? '235 ok\r\n' : '535 bad credentials\r\n'); }
+        else if (/^MAIL FROM/i.test(line)) sock.write('250 ok\r\n');
+        else if ((m = /^RCPT TO:<(.+)>$/i.exec(line))) { rcpt = pmState.deliver(m[1]); sock.write(rcpt ? '250 ok\r\n' : '550 no such user\r\n'); }
+        else if (/^DATA/i.test(line)) { data = ''; sock.write('354 go\r\n'); }
+        else if (/^QUIT/i.test(line)) { sock.write('221 bye\r\n'); sock.end(); }
+      }
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  closers.push(() => { server.close(); });
+  return { port: server.address().port };
 }
 
 /** Faux Stripe : contrôle le contrat réel (Bearer, formulaire imbriqué, champs obligatoires, clés d'idempotence) et simule paiement, refus, 3-D Secure. */
@@ -227,6 +268,7 @@ async function setup(over = {}) {
   const pmState = { fail: false };
   const pm = await fakePurelymail(pmState);
   const imap = await fakeImap(pmState);
+  const smtp = await fakeSmtp(pmState);
   const stState = {};
   const stripe = await fakeStripe(stState);
   const env = {
@@ -253,7 +295,7 @@ async function setup(over = {}) {
   const api = (path, opts = {}) => fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.as ? { 'X-Demo-User': opts.as } : {}), ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined, redirect: opts.redirect || 'follow' });
   const as = (email = 'paul@example.com') => (path, opts = {}) => api(path, { ...opts, as: email });
   closers.push(() => { app.closeAllConnections(); app.close(); try { app.app.db.close(); } catch (e) { /* déjà fermée */ } });
-  return { api, as, user: as(), state, ns, paym, pm, pmState, imap, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
+  return { api, as, user: as(), state, ns, paym, pm, pmState, imap, smtp, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
 }
 
 const closeAll = () => closers.splice(0).forEach((c) => { try { c(); } catch (e) { /* ignoré */ } });

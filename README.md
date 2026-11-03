@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 103 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 106 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -54,6 +54,13 @@ Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-
 10. **Apple Sign-In** non branché. **Factures PDF** : générées dans le navigateur (jsPDF) ; le serveur stocke les factures.
 11. Limitation de débit en mémoire (par instance).
 12. **Suspension par renommage** : les mots de passe d'application d'un utilisateur Purelymail le suivent lors d'un renommage ; ils cessent de fonctionner pour l'ancienne adresse et le nouveau nom aléatoire n'est jamais montré au client. Le comportement du renommage (messages conservés, règle de routage vers la boîte renommée, retour au nom d'origine) suit la spécification de l'API mais **n'a pas été testé avec un vrai compte Purelymail** : à vérifier avec une boîte jetable avant la production. Variable `MAIL_SUSPEND_MODE=password` pour revenir à un simple changement de mot de passe (ne révoque PAS les mots de passe d'application). Les alias qui pointent vers une boîte suspendue peuvent cesser de livrer pendant la suspension.
+
+## Test réel de Purelymail (boîte jetable)
+À lancer **depuis votre machine** (un domaine déjà ajouté et vérifié dans votre compte Purelymail, MX Purelymail en place pour `--deliver`) :
+```bash
+PURELYMAIL_API_KEY=… PURELYMAIL_TEST_DOMAIN=votre-domaine.com npm run live:purelymail -- --yes --deliver
+```
+Crée `fredatest-xxxxxxxx@domaine`, vérifie avec notre propre code (adaptateur + client IMAP) : `createUser`, connexion IMAP `AUTHENTICATE PLAIN` (bon / mauvais mot de passe), **suspension par renommage** (ancienne adresse refusée, mot de passe inchangé), règle de routage créée puis retrouvée, **livraison du courrier** de l'ancienne adresse vers la boîte renommée (`--deliver`), réactivation (mêmes identifiants), changement de mot de passe — puis supprime la boîte et la règle, même en cas d'échec. Sortie `PASS` / `FAIL`, code 1 au moindre échec ; aucun mot de passe affiché ; ne touche à aucune autre boîte. Si le renommage ne bloque pas l'ancienne adresse ou si la livraison échoue, passez `MAIL_SUSPEND_MODE=password` et signalez-le.
 
 ## Premier achat réel (checklist)
 1. `node scripts/live-check.js` avec votre clé : solde, prix, marges (lecture seule).
