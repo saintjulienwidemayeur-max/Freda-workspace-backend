@@ -119,7 +119,17 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       if (res.orderStatus === 'needs_attention') throw new HttpError(502, 'Un problème est survenu. Notre équipe a été alertée et vous contacte rapidement.', 'needs_attention');
       return res;
     }
-    return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', oid)));
+    return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', oid)), charge.embedded ? { embedded: charge.embedded } : {});   // paiement intégré : le client_secret n'est renvoyé qu'ici (et par paymentSession), jamais stocké
+  }
+
+  /** Reprise d'un paiement intégré (fenêtre fermée / page rechargée) : uniquement pour le propriétaire d'une commande encore en attente. */
+  async function paymentSession(userId, orderId) {
+    const o = await db.get('SELECT * FROM orders WHERE id = ? AND user_id = ?', String(orderId), userId);
+    if (!o) throw new HttpError(404, 'Commande introuvable.', 'not_found');
+    if (o.status !== 'awaiting_payment' || !payments.stripe) throw new HttpError(409, 'Cette commande n’attend plus de paiement.', 'not_pending');
+    const embedded = await payments.stripe.resumeEmbedded(o);
+    if (!embedded) throw new HttpError(409, 'Le paiement n’est plus ouvert : recommencez depuis la boutique.', 'session_closed');
+    return { orderId: o.id, embedded };
   }
 
   /* ---------- Confirmation du paiement ---------- */
@@ -304,7 +314,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
   }
 
-  return { create, status, sweep, fulfill, summarize, planAmount, confirmByReference, failByReference, cardsEnabled: !!payments.cards };
+  return { create, status, sweep, fulfill, summarize, planAmount, confirmByReference, failByReference, paymentSession, cardsEnabled: !!payments.cards };
 }
 
 module.exports = { createOrders };

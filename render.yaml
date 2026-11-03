@@ -53,6 +53,8 @@ services:
         sync: false
       - key: STRIPE_WEBHOOK_SECRET
         sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false          # clé PUBLIQUE pk_live_… (Embedded Checkout) ; jamais la clé secrète
       - key: BREVO_API_KEY
         sync: false
       - key: PURELYMAIL_API_KEY

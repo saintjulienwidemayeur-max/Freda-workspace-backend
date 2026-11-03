@@ -292,3 +292,69 @@ test('moyen différé refusé (async_payment_failed) : commande en échec avec m
   assert.strictEqual((await t.db.get("SELECT status FROM orders WHERE reference = ?", r2.reference)).status, 'completed', 'jamais d’écrasement d’une commande exécutée');
   assert.strictEqual((await webhook(t, { id: 'e', type: 'checkout.session.async_payment_failed', data: { object: { client_reference_id: 'inconnue' } } })).status, 200);
 });
+
+/* ---------- Embedded Checkout (paiement dans une fenêtre du site) ---------- */
+const withEmbedded = (over = {}) => withStripe({ ...over, env: { PAYMENTS_PROVIDER: 'paym', STRIPE_PUBLISHABLE_KEY: 'pk_test_abc123', ...(over.env || {}) } });
+
+test('Embedded Checkout : la réponse porte client_secret + clé publique + script Stripe, aucune URL ; la session est « embedded_page » avec return_url', async () => {
+  const t = await withEmbedded();
+  const r = await (await checkout(t, {})).json();
+  assert.strictEqual(r.status, 'pending');
+  assert.strictEqual(r.redirectUrl, undefined, 'pas de page externe');
+  assert.deepStrictEqual(r.embedded, { clientSecret: 'cs_0_secret_abc', publishableKey: 'pk_test_abc123', scriptUrl: 'https://js.stripe.com/endive/stripe.js' });
+  const c = t.stripe.calls.find((x) => x.path === '/v1/checkout/sessions').f;
+  assert.strictEqual(c.ui_mode, 'embedded_page'); assert.strictEqual(c.redirect_on_completion, 'if_required');
+  assert.ok(c.return_url.includes('payment=success') && c.return_url.includes('order=' + r.orderId), 'retour (3-D Secure, banques) : la page sait quelle commande confirmer');
+  assert.ok(!c.success_url && !c.cancel_url);
+  assert.strictEqual((await t.db.get('SELECT redirect_url FROM orders')).redirect_url, '', 'rien de sensible stocké');
+  assert.ok(!JSON.stringify(await t.db.all('SELECT * FROM orders')).includes('secret_abc'), 'le client_secret n’est jamais écrit en base');
+  assert.ok(t.stripe.calls.every((x) => x.version === '2026-09-30.endive'), 'version d’API figée sur tous les appels');
+});
+
+test('Embedded Checkout : après le paiement dans la fenêtre, le webhook (ou le sondage) exécute la commande une seule fois et la carte est enregistrée', async () => {
+  const t = await withEmbedded();
+  const r = await (await checkout(t, {})).json();
+  payAndComplete(t, r);
+  assert.strictEqual((await webhook(t, completed(r.reference))).status, 200);
+  assert.strictEqual((await status(t, r.orderId)).status, 'succeeded');
+  assert.strictEqual(t.ns.calls.filter((x) => x.op === 'registerDomain').length, 1);
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM payment_methods WHERE type = 'card'")).n, 1);
+});
+
+test('reprise du paiement intégré : GET /api/orders/:id/payment rend le client_secret au propriétaire seulement, tant que la session est ouverte', async () => {
+  const t = await withEmbedded();
+  const r = await (await checkout(t, {})).json();
+  const again = await t.user(`/api/orders/${r.orderId}/payment`);
+  assert.strictEqual(again.status, 200);
+  assert.deepStrictEqual((await again.json()).embedded.clientSecret, 'cs_0_secret_abc');
+  assert.strictEqual((await t.as('autre@example.com')(`/api/orders/${r.orderId}/payment`)).status, 404, 'isolation entre comptes');
+  assert.strictEqual((await t.api(`/api/orders/${r.orderId}/payment`)).status, 401);
+  t.stState.sessions['cs_0'].status = 'expired';
+  assert.strictEqual((await t.user(`/api/orders/${r.orderId}/payment`)).status, 409, 'session expirée : recommencer');
+  const r2 = await (await checkout(t, { domains: ['deux.com'] })).json();
+  payAndComplete(t, r2); await webhook(t, completed(r2.reference));
+  assert.strictEqual((await t.user(`/api/orders/${r2.orderId}/payment`)).status, 409, 'commande déjà payée : plus de paiement à reprendre');
+});
+
+test('sans clé publique : repli sur la page Stripe hébergée (nouvel onglet) ; carte enregistrée qui exige 3-D Secure : bascule vers la fenêtre intégrée', async () => {
+  const hosted = await withStripe();
+  const h = await (await checkout(hosted, {})).json();
+  assert.match(h.redirectUrl, /checkout\.stripe\.test/); assert.strictEqual(h.embedded, undefined);
+  const t = await withEmbedded();
+  const first = await (await checkout(t, {})).json(); payAndComplete(t, first); await status(t, first.orderId);
+  const methodId = (await (await t.user('/api/payment-methods')).json()).methods[0].id;
+  t.stState.authRequired = true;
+  const third = await (await checkout(t, { domains: ['trois.com'], methodId })).json();
+  assert.strictEqual(third.status, 'pending'); assert.ok(third.embedded && third.embedded.clientSecret, '3-D Secure : le client termine dans la fenêtre intégrée');
+});
+
+test('configuration : clé publique invalide, secrète collée par erreur, mode différent de la clé secrète, URL de script étrangère -> refusés', () => {
+  const base = { NAMESILO_API_KEY: 'k', JWT_SECRET: 'j'.repeat(40), PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b' };
+  const errs = (env) => assertSafe(loadConfig({ ...base, ...env }));
+  assert.ok(errs({ STRIPE_PUBLISHABLE_KEY: 'sk_live_secret' }).some((e) => /JAMAIS la clé secrète/.test(e)), 'une clé secrète n’est jamais envoyée au navigateur');
+  assert.ok(errs({ STRIPE_PUBLISHABLE_KEY: 'n-importe-quoi' }).some((e) => /invalide/.test(e)));
+  assert.ok(errs({ STRIPE_PUBLISHABLE_KEY: 'pk_live_x', STRIPE_SECRET_KEY: 'sk_test_y', STRIPE_WEBHOOK_SECRET: 'w' }).some((e) => /même mode/.test(e)));
+  assert.ok(errs({ STRIPE_JS_URL: 'https://evil.example/stripe.js' }).some((e) => /STRIPE_JS_URL/.test(e)));
+  assert.deepStrictEqual(errs({ STRIPE_PUBLISHABLE_KEY: 'pk_live_x', STRIPE_SECRET_KEY: 'sk_live_y', STRIPE_WEBHOOK_SECRET: 'w' }), []);
+  assert.strictEqual(loadConfig({ ...base, STRIPE_PUBLISHABLE_KEY: 'pk_live_x', STRIPE_UI_MODE: 'hosted' }).payments.stripe.uiMode, 'hosted', 'repli volontaire sur la page hébergée');
+});

@@ -135,6 +135,7 @@ function createApp(deps) {
   }, auth);
   route('POST', '/api/subscription/cancel', async (c) => { limit(L.write, c.user.id); return await subscription.cancel(c.user.id); }, auth);
   route('POST', '/api/subscription/resume', async (c) => { limit(L.write, c.user.id); return await subscription.resume(c.user.id); }, auth);
+  route('GET', '/api/orders/:id/payment', async (c, p) => { limit(L.write, c.user.id); return orders.paymentSession(c.user.id, p[0]); }, auth);
   route('GET', '/api/orders/:id', async (c, p) => (await orders.status(c.user.id, p[0])), auth);
 
   /* ----- domaines ----- */

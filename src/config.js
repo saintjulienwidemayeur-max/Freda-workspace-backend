@@ -54,7 +54,13 @@ function loadConfig(env = process.env) {
     mailer: { provider: env.MAILER || 'console', brevoKey: env.BREVO_API_KEY || '', brevoUrl: env.BREVO_URL || 'https://api.brevo.com/v3/smtp/email', senderEmail: env.MAIL_FROM || 'no-reply@fredaworkspace.com', senderName: env.MAIL_FROM_NAME || 'Freda Workspace' },
     payments: {
       provider: env.PAYMENTS_PROVIDER || 'demo',                   // demo | paym
-      stripe: { paymentMethodConfig: env.STRIPE_PAYMENT_METHOD_CONFIG || '', secretKey: env.STRIPE_SECRET_KEY || '', webhookSecret: env.STRIPE_WEBHOOK_SECRET || '', baseUrl: env.STRIPE_BASE_URL || 'https://api.stripe.com' },
+      stripe: {
+        paymentMethodConfig: env.STRIPE_PAYMENT_METHOD_CONFIG || '',
+        apiVersion: env.STRIPE_API_VERSION || '2026-09-30.endive',                 // version d'API figée (alignée sur Stripe.js « endive » ci-dessous)
+        publishableKey: env.STRIPE_PUBLISHABLE_KEY || '',                          // pk_… (publique) : active Embedded Checkout (paiement dans une fenêtre du site)
+        jsUrl: env.STRIPE_JS_URL || 'https://js.stripe.com/endive/stripe.js',
+        uiMode: env.STRIPE_UI_MODE === 'hosted' || !env.STRIPE_PUBLISHABLE_KEY ? 'hosted' : 'embedded',
+        secretKey: env.STRIPE_SECRET_KEY || '', webhookSecret: env.STRIPE_WEBHOOK_SECRET || '', baseUrl: env.STRIPE_BASE_URL || 'https://api.stripe.com' },
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
     dataKey: env.DATA_KEY || '',
@@ -84,6 +90,10 @@ function assertSafe(cfg) {
   if (cfg.auth.mode === 'jwt' && cfg.auth.jwtSecret.length < 32) errors.push('JWT_SECRET (32 caractères minimum) requis avec AUTH_MODE=jwt.');
   if (cfg.payments.provider === 'paym' && (!cfg.payments.paym.clientId || !cfg.payments.paym.clientSecret)) errors.push('PAYM_CLIENT_ID et PAYM_CLIENT_SECRET requis avec PAYMENTS_PROVIDER=paym.');
   if (cfg.payments.stripe.secretKey && !/^(sk|rk)_(test|live)_/.test(cfg.payments.stripe.secretKey)) errors.push('STRIPE_SECRET_KEY invalide (attendu sk_test_… ou sk_live_…).');
+  const pk = cfg.payments.stripe.publishableKey, sk = cfg.payments.stripe.secretKey;
+  if (pk && !/^pk_(test|live)_/.test(pk)) errors.push('STRIPE_PUBLISHABLE_KEY invalide (attendu pk_test_… ou pk_live_…). Ne mettez JAMAIS la clé secrète ici : elle est envoyée au navigateur.');
+  if (pk && sk && /^pk_live_/.test(pk) !== /^(sk|rk)_live_/.test(sk)) errors.push('STRIPE_PUBLISHABLE_KEY et STRIPE_SECRET_KEY ne sont pas du même mode (test / live).');
+  if (!/^https:\/\/js\.stripe\.com\//.test(cfg.payments.stripe.jsUrl)) errors.push('STRIPE_JS_URL doit commencer par https://js.stripe.com/.');
   if (cfg.payments.stripe.secretKey && !cfg.payments.stripe.webhookSecret) errors.push('STRIPE_WEBHOOK_SECRET (whsec_…) requis avec STRIPE_SECRET_KEY : sans webhook signé, les paiements par carte ne seraient confirmés que par balayage.');
   if (cfg.nodeEnv === 'production' && /^sk_test_/.test(cfg.payments.stripe.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Stripe de TEST avec NAMESILO_MODE=live : les achats réels seraient payés avec de fausses cartes.');
   if (cfg.nodeEnv === 'production' && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe de boîte choisis par les clients pendant l’exécution de leur commande.');

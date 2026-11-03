@@ -49,7 +49,7 @@ function createStripe({ cfg, db, log }) {
     const q = form(params).join('&');
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}${path}${method === 'GET' && q ? '?' + q : ''}`, {
       method,
-      headers: { Authorization: `Bearer ${secretKey}`, ...(method !== 'GET' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}), ...(idem ? { 'Idempotency-Key': idem } : {}) },
+      headers: { Authorization: `Bearer ${secretKey}`, ...(cfg.payments.stripe.apiVersion ? { 'Stripe-Version': cfg.payments.stripe.apiVersion } : {}), ...(method !== 'GET' ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}), ...(idem ? { 'Idempotency-Key': idem } : {}) },
       body: method === 'GET' ? undefined : q,
       signal: AbortSignal.timeout(25000),
     });
@@ -82,8 +82,16 @@ function createStripe({ cfg, db, log }) {
     return mid;
   }
 
+  const embedded = () => cfg.payments.stripe.uiMode === 'embedded';
+  const embeddedInfo = (clientSecret) => ({ clientSecret, publishableKey: cfg.payments.stripe.publishableKey, scriptUrl: cfg.payments.stripe.jsUrl });
+
+  /**
+   * Session Checkout. Mode « embedded » (STRIPE_PUBLISHABLE_KEY défini) : le formulaire de paiement Stripe s'affiche DANS une fenêtre du site (iframe Stripe, ui_mode=embedded_page) ;
+   * retourne client_secret (pas d'URL). Redirection (3-D Secure, banques) et retour : return_url. Mode « hosted » : page Stripe dans un nouvel onglet (success_url / cancel_url).
+   */
   async function createCheckout({ amount, reference, userId, label, orderId }) {
     const customer = await customerFor(userId);
+    const back = (state) => `${cfg.appUrl}/espace/facturation.html?payment=${state}&order=${encodeURIComponent(orderId || '')}`;
     const s = await api('POST', '/v1/checkout/sessions', {
       // PAS de payment_method_types : Checkout propose TOUS les moyens activés dans le Dashboard Stripe (Paramètres > Moyens de paiement) et éligibles pour la devise,
       // le montant et le pays du client. Seule la CARTE est enregistrée pour les prélèvements automatiques (les autres moyens ne servent qu'à ce paiement).
@@ -93,11 +101,20 @@ function createStripe({ cfg, db, log }) {
       payment_method_options: { card: { setup_future_usage: 'off_session' } },
       payment_intent_data: { metadata: { reference } },
       metadata: { reference },
-      success_url: `${cfg.appUrl}/espace/facturation.html?payment=success&order=${encodeURIComponent(orderId || '')}`,
-      cancel_url: `${cfg.appUrl}/espace/facturation.html?payment=cancelled&order=${encodeURIComponent(orderId || '')}`,
+      ...(embedded()
+        ? { ui_mode: 'embedded_page', return_url: back('success'), redirect_on_completion: 'if_required' }
+        : { success_url: back('success'), cancel_url: back('cancelled') }),
       expires_at: Math.floor(Date.now() / 1000) + 2 * 3600,
     }, { idem: 'cs-' + reference });
+    if (embedded()) return { status: 'pending', providerRef: s.id, embedded: embeddedInfo(s.client_secret), amountCents: cents(amount) };
     return { status: 'pending', providerRef: s.id, redirectUrl: s.url, amountCents: cents(amount) };
+  }
+
+  /** Reprise d'un paiement intégré fermé par erreur : le client_secret d'une session encore ouverte est relu chez Stripe (jamais stocké chez nous). */
+  async function resumeEmbedded(order) {
+    if (!embedded() || !order.charge_id || !order.charge_id.startsWith('cs_')) return null;
+    const s = await api('GET', `/v1/checkout/sessions/${encodeURIComponent(order.charge_id)}`);
+    return s.status === 'open' && s.client_secret ? embeddedInfo(s.client_secret) : null;
   }
 
   /** Prélèvement sans action du client sur une carte enregistrée. `allowRedirect` : en cas d'authentification exigée, bascule vers Checkout (achat initié par le client). */
@@ -148,7 +165,7 @@ function createStripe({ cfg, db, log }) {
   /** Détache la carte chez Stripe quand le client la supprime (elle ne pourra plus être débitée). */
   async function detach(stripePm) { if (enabled && stripePm) await api('POST', `/v1/payment_methods/${encodeURIComponent(stripePm)}/detach`, {}); }
 
-  return { enabled, createCheckout, chargeSaved, verify, refund, detach, saveCard };
+  return { enabled, createCheckout, resumeEmbedded, chargeSaved, verify, refund, detach, saveCard };
 }
 
 module.exports = { createStripe, StripeError, verifySignature, form };

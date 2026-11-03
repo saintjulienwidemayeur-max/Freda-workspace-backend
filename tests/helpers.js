@@ -262,15 +262,17 @@ async function fakeStripe(state) {
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const f = Object.fromEntries(new URLSearchParams(req.method === 'GET' ? url.search : await readRaw(req)));
-    calls.push({ method: req.method, path: url.pathname, f, idem: req.headers['idempotency-key'] });
+    calls.push({ method: req.method, path: url.pathname, f, idem: req.headers['idempotency-key'], version: req.headers['stripe-version'] });
     if (req.headers.authorization !== 'Bearer sk_test_fake') return err(res, 401, { type: 'invalid_request_error', message: 'bad key' });
     if (req.method === 'POST' && !(url.pathname.endsWith('/detach')) && url.pathname !== '/v1/customers' && !req.headers['idempotency-key']) return err(res, 400, { type: 'invalid_request_error', message: 'idempotency key missing' });
     const p = url.pathname;
     if (p === '/v1/customers') { state.customers++; return json(res, 200, { id: 'cus_' + state.customers }); }
     if (p === '/v1/checkout/sessions' && req.method === 'POST') {
-      if (f.mode !== 'payment' || f['payment_method_options[card][setup_future_usage]'] !== 'off_session' || Object.keys(f).some((k) => k.startsWith('payment_method_types')) || !/^cus_/.test(f.customer || '') || !/^\d+$/.test(f['line_items[0][price_data][unit_amount]'] || '') || f['line_items[0][price_data][currency]'] !== 'usd' || !f.success_url || !f.client_reference_id) return err(res, 400, { type: 'invalid_request_error', message: 'bad checkout params' });
+      const embedded = f.ui_mode === 'embedded_page';
+      const urlsOk = embedded ? (/\{?.+/.test(f.return_url || '') && !f.success_url && !f.cancel_url && f.redirect_on_completion === 'if_required') : !!f.success_url;
+      if (f.mode !== 'payment' || f['payment_method_options[card][setup_future_usage]'] !== 'off_session' || Object.keys(f).some((k) => k.startsWith('payment_method_types')) || !/^cus_/.test(f.customer || '') || !/^\d+$/.test(f['line_items[0][price_data][unit_amount]'] || '') || f['line_items[0][price_data][currency]'] !== 'usd' || !urlsOk || !f.client_reference_id) return err(res, 400, { type: 'invalid_request_error', message: 'bad checkout params' });
       const id = 'cs_' + Object.keys(state.sessions).length;
-      state.sessions[id] = { id, status: 'open', payment_status: 'unpaid', amount_total: Number(f['line_items[0][price_data][unit_amount]']), ref: f.client_reference_id, customer: f.customer, url: 'https://checkout.stripe.test/' + id };
+      state.sessions[id] = { id, status: 'open', payment_status: 'unpaid', amount_total: Number(f['line_items[0][price_data][unit_amount]']), ref: f.client_reference_id, customer: f.customer, ...(embedded ? { client_secret: id + '_secret_abc', ui_mode: 'embedded_page' } : { url: 'https://checkout.stripe.test/' + id }) };
       return json(res, 200, state.sessions[id]);
     }
     let m = /^\/v1\/checkout\/sessions\/(cs_\w+)$/.exec(p);
