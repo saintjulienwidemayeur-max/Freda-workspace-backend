@@ -191,10 +191,12 @@ function createApp(deps) {
     try { const v = JSON.parse(Buffer.concat(chunks).toString('utf8')); return v && typeof v === 'object' ? v : {}; } catch (e) { throw new HttpError(400, 'JSON invalide.'); }
   }
 
+  const rejectedOrigins = new Set();
   const server = http.createServer(async (req, res) => {
     const origin = req.headers.origin;
     const cors = {};
     if (origin && cfg.allowedOrigins.includes(origin)) Object.assign(cors, { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', Vary: 'Origin' });
+    if (origin && !cors['Access-Control-Allow-Origin'] && !rejectedOrigins.has(origin) && rejectedOrigins.size < 20) { rejectedOrigins.add(origin); log('warn', 'cors_origin_rejected', { origin, hint: 'ajouter cette origine à ALLOWED_ORIGINS' }); }
     const send = (status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...cors, ...headers }); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') return send(204, {}, { 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key', 'Access-Control-Max-Age': '600' });
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
