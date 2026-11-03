@@ -85,6 +85,17 @@ async function fakePurelymail(state) {
   state.rules = state.rules || [];
   state.users = state.users || [];
   state.verifiedTxt = state.verifiedTxt === undefined ? true : state.verifiedTxt;
+  state.passwords = state.passwords || {};
+  state.appPasswords = state.appPasswords || {};     // { 'user@domaine': ['mot de passe d’application'] } posés par les tests
+  /** Modèle d'authentification : un utilisateur existe sous UN nom ; mot de passe principal OU mot de passe d'application de CE nom. */
+  state.login = (user, pass) => state.users.includes(user) && (state.passwords[user] === pass || (state.appPasswords[user] || []).includes(pass));
+  /** Courrier entrant : utilisateur existant, sinon règle de routage exacte vers un utilisateur existant, sinon rejet. */
+  state.deliver = (addr) => {
+    if (state.users.includes(addr)) return addr;
+    const [local, domain] = addr.split('@');
+    const rule = state.rules.find((r) => r.domainName === domain && r.matchUser === local && !r.prefix && r.targetAddresses.some((t) => state.users.includes(t)));
+    return rule ? rule.targetAddresses.find((t) => state.users.includes(t)) : null;
+  };
   const bad = (res, msg) => json(res, 200, { type: 'error', code: 'invalidParameter', message: msg });
   const server = http.createServer(async (req, res) => {
     const b = await readBody(req);
@@ -103,16 +114,28 @@ async function fakePurelymail(state) {
       case 'createUser':
         if (!str(b.userName) || b.userName.includes('@') || !str(b.domainName) || !str(b.password)) return bad(res, 'createUser: userName = partie locale');
         if (!state.domains.includes(b.domainName)) return json(res, 200, { type: 'error', code: 'domainNotFound', message: 'add domain first' });
-        state.users.push(`${b.userName}@${b.domainName}`); return json(res, 200, { type: 'success', result: {} });
+        if (state.users.includes(`${b.userName}@${b.domainName}`)) return json(res, 200, { type: 'error', code: 'userExists', message: 'exists' });
+        state.users.push(`${b.userName}@${b.domainName}`); state.passwords[`${b.userName}@${b.domainName}`] = b.password; return json(res, 200, { type: 'success', result: {} });
       case 'modifyUser':
         if (!str(b.userName) || !b.userName.includes('@') || !str(b.newPassword)) return bad(res, 'modifyUser: userName complet + newPassword');
-        state.passwords = state.passwords || {}; state.passwords[b.userName] = b.newPassword; return json(res, 200, { type: 'success', result: {} });
+        if (!state.users.includes(b.userName)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user ' + b.userName });
+        if (b.newUserName) {
+          if (state.users.includes(b.newUserName)) return json(res, 200, { type: 'error', code: 'userExists', message: 'exists' });
+          state.users[state.users.indexOf(b.userName)] = b.newUserName;
+          state.passwords[b.newUserName] = state.passwords[b.userName]; delete state.passwords[b.userName];
+          state.appPasswords[b.newUserName] = state.appPasswords[b.userName] || []; delete state.appPasswords[b.userName];   // les mots de passe d'application suivent l'utilisateur
+        }
+        if (b.newPassword) state.passwords[b.newUserName || b.userName] = b.newPassword;
+        return json(res, 200, { type: 'success', result: {} });
       case 'deleteUser':
         if (!str(b.userName) || !b.userName.includes('@')) return bad(res, 'deleteUser: userName = adresse complète');
+        if (!state.users.includes(b.userName)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user' });
+        state.users.splice(state.users.indexOf(b.userName), 1);
         return json(res, 200, { type: 'success', result: {} });
       case 'createRoutingRule':
         if (!str(b.domainName) || typeof b.prefix !== 'boolean' || !str(b.matchUser) || !Array.isArray(b.targetAddresses) || !b.targetAddresses.length) return bad(res, 'createRoutingRule: prefix booléen, matchUser chaîne');
-        state.rules.push({ id: 100 + state.rules.length, domainName: b.domainName, prefix: b.prefix, matchUser: b.matchUser, targetAddresses: b.targetAddresses, catchall: !!b.catchall });
+        if (state.failRules) return json(res, 200, { type: 'error', code: 'ruleFailed', message: 'boom' });
+        state.rules.push({ id: 100 + (state.ruleSeq = (state.ruleSeq || 0) + 1), domainName: b.domainName, prefix: b.prefix, matchUser: b.matchUser, targetAddresses: b.targetAddresses, catchall: !!b.catchall });
         return json(res, 200, { type: 'success', result: {} });
       case 'listRoutingRules': return json(res, 200, { type: 'success', result: { rules: state.rules } });
       case 'deleteRoutingRule':

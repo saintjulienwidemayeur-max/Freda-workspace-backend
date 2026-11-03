@@ -50,7 +50,7 @@ function loadConfig(env = process.env) {
       stripe: { secretKey: env.STRIPE_SECRET_KEY || '', webhookSecret: env.STRIPE_WEBHOOK_SECRET || '', baseUrl: env.STRIPE_BASE_URL || 'https://api.stripe.com' },
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
-    purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0' },
+    purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0', suspendMode: env.MAIL_SUSPEND_MODE === 'password' ? 'password' : 'rename' },
     dns: { resolvers: list(env.DNS_RESOLVERS, '8.8.8.8,1.1.1.1,9.9.9.9,208.67.222.222') },
     renewals: { enabled: bool(env.RENEWALS_ENABLED, true), daysBefore: Number(env.RENEWAL_DAYS_BEFORE) || 30, intervalMs: Number(env.JOBS_INTERVAL_MS) || 6 * 3600 * 1000 },
     alerts: { webhookUrl: env.ALERT_WEBHOOK_URL || '' },

@@ -30,8 +30,12 @@ function createPurelymail(cfg, log) {
     ownershipCode: async () => String((await call('getOwnershipCode', {})).code || ''),
     addDomain: (domain) => call('addDomain', { domainName: domain }),
     createUser: ({ local, domain, password }) => call('createUser', { userName: local, domainName: domain, password, enablePasswordReset: false, enableSearchIndexing: true, sendWelcomeEmail: false }),
-    /** Mot de passe imposé : sert à BLOQUER l'accès (suspension) ou à rouvrir la boîte (réactivation) sans toucher aux messages. */
-    setPassword: ({ local, domain, password }) => call('modifyUser', { userName: `${local}@${domain}`, newPassword: password }),
+    /** modifyUser : nouveau mot de passe et/ou nouveau nom (renommer change l'identifiant de connexion IMAP/SMTP/webmail, donc invalide aussi les mots de passe d'application). */
+    modifyUser: ({ local, domain, newLocal, password }) => call('modifyUser', { userName: `${local}@${domain}`, ...(newLocal ? { newUserName: `${newLocal}@${domain}` } : {}), ...(password ? { newPassword: password } : {}) }),
+    async findRules({ domain, local, target }) {
+      const rules = (await call('listRoutingRules', {})).rules || [];
+      return rules.filter((r) => String(r.domainName).toLowerCase() === domain && r.matchUser === local && !r.prefix && !r.catchall && (!target || (r.targetAddresses || []).includes(target)));
+    },
     deleteUser: ({ local, domain }) => call('deleteUser', { userName: `${local}@${domain}` }),
     /** La réponse de createRoutingRule est vide : on retrouve la règle créée pour pouvoir la supprimer plus tard. */
     async createRoutingRule({ domain, local, targets }) {
@@ -104,7 +108,10 @@ function createMail({ cfg, db, log, provider, dns }) {
     const b = db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
     if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
     if (b.role === 'Propriétaire' && db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId).n > 1) throw new HttpError(400, 'Supprimez d’abord les autres boîtes ou transférez la propriété.', 'owner_box');
-    if (pm.enabled && b.provider_status !== 'pending_provider') await pm.deleteUser({ local: b.local_part, domain: b.domain });
+    if (pm.enabled && b.provider_status !== 'pending_provider') {
+      if (b.provider_user) await dropSuspendRules(b, b.provider_user);
+      await pm.deleteUser({ local: providerLocal(b), domain: b.domain });
+    }
     db.tx(() => {
       for (const a of db.all('SELECT * FROM aliases WHERE user_id = ? AND to_addr = ?', userId, b.address)) db.run('DELETE FROM aliases WHERE id = ?', a.id);
       db.run('DELETE FROM mailboxes WHERE id = ?', b.id);
@@ -136,37 +143,72 @@ function createMail({ cfg, db, log, provider, dns }) {
   }
 
   const secret = () => crypto.randomBytes(18).toString('base64url');
+  const renameMode = cfg.purelymail.suspendMode === 'rename';
+  const providerLocal = (b) => b.provider_user || b.local_part;
+
+  /** Courrier entrant d'une boîte suspendue : l'adresse d'origine est redirigée vers la boîte renommée (rien n'est perdu, rien n'est lisible par le client). */
+  async function ensureSuspendRule(b) {
+    if (!pm.enabled || !b.provider_user) return true;
+    try {
+      const target = `${b.provider_user}@${b.domain}`;
+      if (!(await pm.findRules({ domain: b.domain, local: b.local_part, target })).length) await pm.createRoutingRule({ domain: b.domain, local: b.local_part, targets: [target] });
+      db.run("UPDATE mailboxes SET rule_state = 'set' WHERE id = ?", b.id); return true;
+    } catch (e) { log('warn', 'suspend_rule_failed', { mailbox: b.address }); return false; }
+  }
+  async function dropSuspendRules(b, alias) {
+    if (!pm.enabled) return true;
+    try {
+      for (const r of await pm.findRules({ domain: b.domain, local: b.local_part, target: alias ? `${alias}@${b.domain}` : undefined })) await pm.deleteRoutingRule(r.id);
+      return true;
+    } catch (e) { log('warn', 'suspend_rule_cleanup_failed', { mailbox: b.address }); return false; }
+  }
 
   /**
-   * Suspension (offre impayée ou résiliée) : l'accès est bloqué en remplaçant le mot de passe par un secret aléatoire jamais conservé ;
-   * les messages sont gardés et le courrier entrant continue d'arriver. Rien n'est supprimé. Les échecs restent « active » et sont retentés au passage suivant.
+   * Suspension (offre impayée ou résiliée). Mode « rename » (défaut) : en UN appel modifyUser, la boîte est renommée (susp-xxxx) ET reçoit un secret aléatoire jamais conservé.
+   * L'identifiant de connexion change donc : mot de passe principal, mots de passe d'application et sessions webmail de l'ancienne adresse cessent tous de fonctionner,
+   * le client ne connaît pas le nouveau nom. Le courrier entrant est redirigé vers la boîte renommée : messages conservés, rien n'est supprimé.
+   * Mode « password » (MAIL_SUSPEND_MODE=password) : seul le mot de passe change (ne révoque PAS les mots de passe d'application). Les échecs sont retentés au passage suivant.
    */
   async function suspendMailboxes(userId) {
     let suspended = 0, failed = 0;
     for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'active'", userId)) {
       try {
-        if (pm.enabled) await pm.setPassword({ local: b.local_part, domain: b.domain, password: secret() });
-        db.run("UPDATE mailboxes SET provider_status = 'suspended' WHERE id = ?", b.id); suspended++;
+        const alias = renameMode ? 'susp-' + crypto.randomBytes(5).toString('hex') : '';
+        if (pm.enabled) await pm.modifyUser({ local: b.local_part, domain: b.domain, newLocal: alias || undefined, password: secret() });
+        db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ? WHERE id = ?", alias, alias ? 'pending' : '', b.id);
+        suspended++;
       } catch (e) { failed++; log('warn', 'mailbox_suspend_failed', { mailbox: b.address }); }
     }
+    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended' AND rule_state = 'pending'", userId)) if (!(await ensureSuspendRule(b))) failed++;
     return { suspended, failed };
   }
 
-  /** Réactivation après paiement : nouveau mot de passe par boîte (renvoyé UNE fois, jamais stocké). Une boîte en échec reste suspendue et sera retentée. */
+  /** Réactivation après paiement : l'ancien nom est rétabli (les appareils déjà configurés refonctionnent) et un NOUVEAU mot de passe est posé, renvoyé UNE fois, jamais stocké. */
   async function reactivateMailboxes(userId) {
     const mailboxes = []; let failed = 0;
     for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended'", userId)) {
       const password = secret();
       try {
-        if (pm.enabled) await pm.setPassword({ local: b.local_part, domain: b.domain, password });
-        db.run("UPDATE mailboxes SET provider_status = 'active' WHERE id = ?", b.id);
+        if (pm.enabled) await pm.modifyUser({ local: providerLocal(b), domain: b.domain, newLocal: b.provider_user ? b.local_part : undefined, password });
+        db.run("UPDATE mailboxes SET provider_status = 'active', provider_user = '', rule_state = ? WHERE id = ?", b.provider_user ? 'cleanup' : '', b.id);
         mailboxes.push({ address: b.address, password });
       } catch (e) { failed++; log('warn', 'mailbox_reactivate_failed', { mailbox: b.address }); }
     }
+    await reconcileRules(userId);
     return { mailboxes, failed };
   }
 
-  return { listBoxes, listAliases, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, providerEnabled: pm.enabled };
+  /** Règles de routage de suspension : posées pour les boîtes suspendues, retirées pour les boîtes réactivées (retentées tant que nécessaire). */
+  async function reconcileRules(userId) {
+    let failed = 0;
+    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND rule_state IN ('pending','cleanup')", userId)) {
+      if (b.rule_state === 'pending' && b.provider_status === 'suspended') { if (!(await ensureSuspendRule(b))) failed++; }
+      else if (b.rule_state === 'cleanup' && b.provider_status === 'active') { if (await dropSuspendRules(b)) db.run("UPDATE mailboxes SET rule_state = '' WHERE id = ?", b.id); else failed++; }
+    }
+    return { failed };
+  }
+
+  return { listBoxes, listAliases, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };

@@ -71,6 +71,11 @@ const MIGRATIONS = [
   `
   ALTER TABLE subscriptions ADD COLUMN cancel_at_period_end INTEGER NOT NULL DEFAULT 0;
   `,
+  /* 4 — suspension par renommage : nom d'utilisateur actuel chez Purelymail et état de la règle de routage du courrier entrant */
+  `
+  ALTER TABLE mailboxes ADD COLUMN provider_user TEXT NOT NULL DEFAULT '';
+  ALTER TABLE mailboxes ADD COLUMN rule_state TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 function openDb(file) {

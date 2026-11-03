@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 85 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 88 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -16,7 +16,7 @@ AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local 
 | **Domaines** | `GET /api/domains/search`, `POST /api/checkout` (`kind: domain`), `GET /api/domains`, `PATCH /api/domains/:d` (verrou, rappels), `POST /api/domains/:d/auth-code` | NameSilo. Prix, disponibilité et solde recalculés côté serveur. |
 | **Offre Freda Mail** | `POST /api/checkout` (`kind: subscription`) | Prix serveur (annuel = 10 mois), zone e-mail, première boîte, facture. |
 | **Renouvellement** | `POST /api/checkout` (`kind: renewal`) | `renewDomain` après paiement. Automatique sur la carte enregistrée (Stripe). |
-| **Cycle de vie de l'offre** | `POST /api/subscription/cancel · resume` | Impayée > 7 j ou résiliée à la fin de la période : boîtes **suspendues** (mot de passe remplacé par un secret aléatoire, `modifyUser`) — messages conservés, courrier entrant toujours reçu, **rien n'est supprimé**. Réactivation au paiement : nouveau mot de passe par boîte, envoyé par e-mail. Échecs Purelymail retentés à chaque passage. |
+| **Cycle de vie de l'offre** | `POST /api/subscription/cancel · resume` | Impayée > 7 j ou résiliée à la fin de la période : boîtes **suspendues** — en un seul `modifyUser`, la boîte est **renommée** (`susp-xxxx`) et reçoit un secret aléatoire : l'ancien identifiant ne marche plus nulle part (mot de passe, mots de passe d'application, webmail). Le courrier entrant est redirigé (règle de routage) vers la boîte conservée ; **rien n'est supprimé**. Réactivation au paiement : ancien nom rétabli (les appareils déjà configurés refonctionnent), règle retirée, nouveau mot de passe envoyé par e-mail. Échecs Purelymail retentés à chaque passage. |
 | **Cartes (Stripe)** | `POST /api/checkout` (`method: card`), `POST /api/webhooks/stripe`, `GET/DELETE /api/payment-methods` | Checkout hébergé par Stripe (aucune donnée de carte chez nous), carte enregistrée pour la suite. **Prélèvement automatique** des offres Freda Mail à l'échéance (3 tentatives : échéance, +3 j, +5 j), remboursement automatique, webhook signé revérifié chez Stripe. |
 | **Paiement** | `GET /api/orders/:id` | Pay'm est **asynchrone** : redirection → confirmation par vérification (client + balayage chaque minute). |
 | **DNS** | `GET/POST /api/domains/:d/dns`, `PATCH/DELETE …/dns/:id`, `POST …/dns/autofix`, `GET …/dns/check` | Répercuté chez NameSilo pour les domaines achetés chez nous. Propagation = vrais résolveurs publics. |
@@ -43,7 +43,7 @@ AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local 
 9. **SQLite = une seule instance** (disque Render). Pour plusieurs instances : PostgreSQL (tout l'accès SQL passe par `src/db.js` et les modules).
 10. **Apple Sign-In** non branché. **Factures PDF** : générées dans le navigateur (jsPDF) ; le serveur stocke les factures.
 11. Limitation de débit en mémoire (par instance).
-12. **Suspension** = accès bloqué par changement de mot de passe (l'API Purelymail n'offre pas de « désactiver » un utilisateur). Une application de messagerie déjà connectée via un mot de passe d'application Purelymail n'est pas révoquée par ce moyen ; nos clients n'ont pas accès au portail Purelymail, donc ils n'en créent pas.
+12. **Suspension par renommage** : les mots de passe d'application d'un utilisateur Purelymail le suivent lors d'un renommage ; ils cessent de fonctionner pour l'ancienne adresse et le nouveau nom aléatoire n'est jamais montré au client. Le comportement du renommage (messages conservés, règle de routage vers la boîte renommée, retour au nom d'origine) suit la spécification de l'API mais **n'a pas été testé avec un vrai compte Purelymail** : à vérifier avec une boîte jetable avant la production. Variable `MAIL_SUSPEND_MODE=password` pour revenir à un simple changement de mot de passe (ne révoque PAS les mots de passe d'application). Les alias qui pointent vers une boîte suspendue peuvent cesser de livrer pendant la suspension.
 
 ## Premier achat réel (checklist)
 1. `node scripts/live-check.js` avec votre clé : solde, prix, marges (lecture seule).

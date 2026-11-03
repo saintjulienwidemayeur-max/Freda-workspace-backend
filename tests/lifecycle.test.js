@@ -13,7 +13,8 @@ const run = (t) => t.app.app.jobs.run();
 async function withMail(over = {}) {
   const t = await setup({ payments: demoPay, ...over });
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1 } });
-  await sub(t, { domain: 'neuf.com', mailbox: { local: 'contact' } });
+  const first = await j(await sub(t, { domain: 'neuf.com', mailbox: { local: 'contact' } }));
+  t.initialPassword = first.initialPassword;
   t.mailer.sent.length = 0;
   return t;
 }
@@ -25,16 +26,54 @@ test('impayée depuis plus de 7 jours : boîtes réellement suspendues (mot de p
   await run(t);
   assert.strictEqual(t.db.get('SELECT status FROM subscriptions').status, 'suspended');
   assert.strictEqual(boxStatus(t), 'suspended');
-  assert.strictEqual(modify(t).length, 1);
+  assert.strictEqual(modify(t).length, 1, 'UN seul appel : renommage + mot de passe');
   assert.strictEqual(modify(t)[0].body.userName, 'contact@neuf.com', 'adresse complète');
+  assert.match(modify(t)[0].body.newUserName, /^susp-[0-9a-f]{10}@neuf\.com$/);
   assert.ok(modify(t)[0].body.newPassword.length >= 20, 'secret aléatoire');
   assert.ok(!t.pm.calls.some((c) => c.path.endsWith('/deleteUser')), 'rien n’est supprimé');
   assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes').n, 1, 'la boîte existe toujours');
   assert.strictEqual(t.mailer.sent.filter((m) => /suspendues/.test(m.subject)).length, 1);
   await run(t); await run(t);
   assert.strictEqual(modify(t).length, 1, 'pas de second appel');
+  assert.strictEqual(t.pm.calls.filter((c) => c.path.endsWith('/createRoutingRule')).length, 1, 'une seule règle de routage');
   assert.strictEqual(t.mailer.sent.filter((m) => /suspendues/.test(m.subject)).length, 1);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'x', domain: 'neuf.com' } })).status, 402, 'pas de nouvelle boîte tant que suspendue');
+});
+
+test('suspension : plus AUCUN accès (mot de passe, mot de passe d’application, ancienne adresse) ; le courrier entrant est conservé', async () => {
+  const t = await withMail();
+  t.pmState.appPasswords['contact@neuf.com'] = ['app-secret'];
+  assert.ok(t.pmState.login('contact@neuf.com', t.initialPassword) && t.pmState.login('contact@neuf.com', 'app-secret'), 'avant : les deux fonctionnent');
+  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await run(t);
+  const renamed = t.pm.calls.find((c) => c.path.endsWith('/modifyUser')).body.newUserName;
+  assert.ok(!t.pmState.login('contact@neuf.com', t.initialPassword), 'mot de passe principal refusé');
+  assert.ok(!t.pmState.login('contact@neuf.com', 'app-secret'), 'mot de passe d’application refusé');
+  assert.ok(!JSON.stringify(await (await t.user('/api/workspace')).json()).includes(renamed.split('@')[0]), 'le nouveau nom n’est jamais exposé au client');
+  assert.ok(!t.pmState.login(renamed, t.initialPassword), 'ni le nouveau nom avec l’ancien mot de passe');
+  assert.strictEqual(t.pmState.deliver('contact@neuf.com'), renamed, 'le courrier entrant arrive dans la boîte conservée');
+  assert.strictEqual(t.db.get('SELECT rule_state AS r FROM mailboxes').r, 'set');
+});
+
+test('mode « password » : seul le mot de passe change — le mot de passe d’application SURVIT (limite documentée, d’où le mode rename par défaut)', async () => {
+  const t = await withMail({ env: { MAIL_SUSPEND_MODE: 'password' } });
+  t.pmState.appPasswords['contact@neuf.com'] = ['app-secret'];
+  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await run(t);
+  assert.strictEqual(modify(t)[0].body.newUserName, undefined);
+  assert.ok(!t.pmState.login('contact@neuf.com', t.initialPassword));
+  assert.ok(t.pmState.login('contact@neuf.com', 'app-secret'), 'limite connue du mode password');
+  assert.strictEqual(t.pm.calls.filter((c) => c.path.endsWith('/createRoutingRule')).length, 0);
+});
+
+test('suspension : règle de routage en échec -> boîte déjà verrouillée, règle retentée au passage suivant (courrier rejeté entre-temps)', async () => {
+  const t = await withMail();
+  t.pmState.failRules = true;
+  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await run(t);
+  assert.strictEqual(boxStatus(t), 'suspended', 'l’accès est déjà bloqué');
+  assert.strictEqual(t.db.get('SELECT rule_state AS r FROM mailboxes').r, 'pending');
+  assert.strictEqual(t.pmState.deliver('contact@neuf.com'), null);
+  t.pmState.failRules = false; await run(t);
+  assert.strictEqual(t.db.get('SELECT rule_state AS r FROM mailboxes').r, 'set');
+  assert.ok(t.pmState.deliver('contact@neuf.com'));
 });
 
 test('suspension : si Purelymail est en panne la boîte reste ouverte et la suspension est retentée au passage suivant', async () => {
@@ -54,7 +93,13 @@ test('réactivation : le paiement rouvre les boîtes avec un NOUVEAU mot de pass
   assert.strictEqual((await sub(t)).status, 200);
   assert.strictEqual(boxStatus(t), 'active');
   const reopen = modify(t)[before];
-  assert.strictEqual(reopen.body.userName, 'contact@neuf.com');
+  assert.match(reopen.body.userName, /^susp-/); assert.strictEqual(reopen.body.newUserName, 'contact@neuf.com');
+  t.pmState.appPasswords['contact@neuf.com'] = t.pmState.appPasswords['contact@neuf.com'] || [];
+  assert.ok(t.pmState.users.includes('contact@neuf.com') && !t.pmState.users.some((u) => u.startsWith('susp-')), 'ancien nom rétabli');
+  assert.strictEqual(t.pmState.rules.length, 0, 'règle de suspension retirée');
+  assert.strictEqual(t.pmState.deliver('contact@neuf.com'), 'contact@neuf.com');
+  assert.ok(t.pmState.login('contact@neuf.com', reopen.body.newPassword), 'le nouveau mot de passe fonctionne');
+  assert.strictEqual(t.db.get('SELECT rule_state AS r, provider_user AS u FROM mailboxes').r, '');
   const mail = t.mailer.sent.find((m) => /réactivées/.test(m.subject));
   assert.ok(mail && mail.text.includes('contact@neuf.com : ' + reopen.body.newPassword), 'le mot de passe envoyé est celui posé chez Purelymail');
   const s = t.db.get('SELECT * FROM subscriptions');
@@ -121,7 +166,10 @@ test('suppression d’une boîte suspendue : supprimée aussi chez Purelymail', 
   t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await run(t);
   const id = t.db.get('SELECT id FROM mailboxes').id;
   assert.strictEqual((await t.user('/api/mailboxes/' + id, { method: 'DELETE' })).status, 200);
-  assert.ok(t.pm.calls.some((c) => c.path.endsWith('/deleteUser') && c.body.userName === 'contact@neuf.com'));
+  const del = t.pm.calls.find((c) => c.path.endsWith('/deleteUser'));
+  assert.match(del.body.userName, /^susp-[0-9a-f]{10}@neuf\.com$/, 'supprimée sous son nom actuel');
+  assert.strictEqual(t.pmState.rules.length, 0, 'règle de suspension retirée');
+  assert.strictEqual(t.pmState.users.length, 0);
 });
 
 test('régression : les rappels du cycle suivant ne sont plus étouffés (notices remis à zéro à chaque renouvellement)', async () => {

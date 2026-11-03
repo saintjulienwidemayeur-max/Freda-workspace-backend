@@ -119,6 +119,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
     for (const r of db.all("SELECT DISTINCT s.user_id FROM subscriptions s JOIN mailboxes m ON m.user_id = s.user_id WHERE s.status IN ('suspended','cancelled') AND m.provider_status = 'active'")) {
       const out = await mail.suspendMailboxes(r.user_id); n += out.suspended;
     }
+    for (const r of db.all("SELECT DISTINCT user_id FROM mailboxes WHERE rule_state IN ('pending','cleanup')")) await mail.reconcileRules(r.user_id);   // règles de routage à poser / retirer (échecs précédents)
     return n;
   }
 
