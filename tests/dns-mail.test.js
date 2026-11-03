@@ -251,3 +251,20 @@ test('workspace : dnsConfig indique si les serveurs de noms Freda existent (sino
   assert.strictEqual(w2.dnsConfig.nameserversAvailable, true);
   assert.deepStrictEqual(w2.dnsConfig.nameservers, ['ns1.exemple.com', 'ns2.exemple.com']);
 });
+
+test('boîtes : deux créations simultanées ne dépassent pas la limite de l’offre ; échec Purelymail rend la place', async () => {
+  const t = await withDomain();
+  await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });   // Starter = 1 boîte
+  const mk = (local) => t.user('/api/mailboxes', { method: 'POST', body: { local, domain: 'neuf.com' } });
+  const res = await Promise.all([mk('a1'), mk('a2'), mk('a3')]);
+  assert.strictEqual(res.filter((r) => r.status === 200).length, 1, 'une seule boîte pour une offre à 1 boîte');
+  assert.ok(res.filter((r) => r.status !== 200).every((r) => r.status === 403), 'les autres reçoivent plan_limit');
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 1);
+  const t2 = await withDomain();
+  await t2.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });
+  t2.pmState.fail = true;
+  assert.strictEqual((await t2.user('/api/mailboxes', { method: 'POST', body: { local: 'x', domain: 'neuf.com' } })).status, 502);
+  t2.pmState.fail = false;
+  assert.strictEqual((await t2.user('/api/mailboxes', { method: 'POST', body: { local: 'x', domain: 'neuf.com' } })).status, 200, 'la place réservée a été rendue');
+  assert.ok(!(await (await t2.user('/api/workspace')).json()).mailboxes.some((b) => b.status === 'creating'));
+});

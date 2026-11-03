@@ -51,9 +51,11 @@ function createPurelymail(cfg, log) {
     deleteUser: ({ local, domain }) => call('deleteUser', { userName: `${local}@${domain}` }),
     /** La réponse de createRoutingRule est vide : on retrouve la règle créée pour pouvoir la supprimer plus tard. */
     async createRoutingRule({ domain, local, targets }) {
+      const before = new Set(((await call('listRoutingRules', {})).rules || []).map((r) => r.id));
       await call('createRoutingRule', { domainName: domain, prefix: false, matchUser: local, targetAddresses: targets, catchall: false });
       const rules = (await call('listRoutingRules', {})).rules || [];
-      const hit = rules.filter((r) => String(r.domainName).toLowerCase() === domain && r.matchUser === local && !r.prefix && !r.catchall).sort((a, b) => b.id - a.id)[0];
+      const fresh = rules.filter((r) => !before.has(r.id) && String(r.domainName).toLowerCase() === domain && r.matchUser === local && !r.prefix && !r.catchall);
+      const hit = fresh.sort((a, b) => b.id - a.id)[0];   // la règle nouvelle (absente de la liste d'avant), pas celle d'une requête simultanée
       return { id: hit ? hit.id : '' };
     },
     deleteRoutingRule: (ref) => call('deleteRoutingRule', { routingRuleId: Number(ref) }),
@@ -111,7 +113,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     return { domain: d.name, external: !!d.external, managedByFreda: !d.external && d.dns_mode === 'registrar', record: { type: 'TXT', name: '@', value: code }, status };
   }
 
-  const listBoxes = async (userId) => (await db.all('SELECT * FROM mailboxes WHERE user_id = ? ORDER BY created_at', userId)).map(box);
+  const listBoxes = async (userId) => (await db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status <> 'creating' ORDER BY created_at", userId)).map(box);
   const listAliases = async (userId) => (await db.all('SELECT * FROM aliases WHERE user_id = ? ORDER BY from_addr', userId)).map(alias);
 
   /** Crée une boîte. Le mot de passe initial n'est renvoyé QU'ICI (jamais stocké). */
@@ -121,16 +123,28 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     if (!LOCAL.test(lp)) throw new HttpError(400, 'Nom de boîte invalide (lettres, chiffres, point, tiret).', 'invalid_local');
     const d = await ownDomain(userId, domain);
     const plan = cfg.plans[sub.plan];
-    const count = (await db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId)).n;
-    if (count >= plan.mailboxes) throw new HttpError(403, `Votre offre ${plan.name} est limitée à ${plan.mailboxes} boîte${plan.mailboxes > 1 ? 's' : ''}. Passez à une offre supérieure.`, 'plan_limit');
     const address = `${lp}@${d.name}`;
-    if ((await db.get('SELECT 1 FROM mailboxes WHERE address = ?', address)) || (await db.get('SELECT 1 FROM aliases WHERE from_addr = ?', address))) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
     const chosenPw = chosen === undefined || chosen === null || chosen === '' ? null : validatePassword(chosen, lp);
     const password = chosenPw || crypto.randomBytes(12).toString('base64url');
-    let status = 'pending_provider';
-    if (pm.enabled) { await ensureProviderDomain(userId, d); await pm.createUser({ local: lp, domain: d.name, password }); status = 'active'; }
+    // 1. Réservation en base (verrou sur l'abonnement du client) : limite d'offre et doublons vérifiés sans course entre deux requêtes simultanées.
     const bid = id('mbx');
-    await db.run('INSERT INTO mailboxes (id, user_id, domain, local_part, address, name, role, provider_status, created_at) VALUES (?,?,?,?,?,?,?,?,?)', bid, userId, d.name, lp, address, String(name || lp).trim().slice(0, 80), count === 0 ? 'Propriétaire' : 'Utilisateur', status, new Date().toISOString());
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString();   // une réservation « creating » abandonnée (crash) cesse de compter au bout de 5 min
+    await db.tx(async () => {
+      await db.get('SELECT user_id FROM subscriptions WHERE user_id = ? FOR UPDATE', userId);
+      await db.run("DELETE FROM mailboxes WHERE provider_status = 'creating' AND created_at < ?", stale);
+      const count = (await db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId)).n;
+      if (count >= plan.mailboxes) throw new HttpError(403, `Votre offre ${plan.name} est limitée à ${plan.mailboxes} boîte${plan.mailboxes > 1 ? 's' : ''}. Passez à une offre supérieure.`, 'plan_limit');
+      if ((await db.get('SELECT 1 FROM mailboxes WHERE address = ?', address)) || (await db.get('SELECT 1 FROM aliases WHERE from_addr = ?', address))) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
+      await db.run('INSERT INTO mailboxes (id, user_id, domain, local_part, address, name, role, provider_status, created_at) VALUES (?,?,?,?,?,?,?,?,?)', bid, userId, d.name, lp, address, String(name || lp).trim().slice(0, 80), count === 0 ? 'Propriétaire' : 'Utilisateur', pm.enabled ? 'creating' : 'pending_provider', new Date().toISOString());
+    });
+    // 2. Création chez Purelymail ; en cas d'échec la réservation est supprimée (aucune boîte fantôme, la place est rendue).
+    let status = 'pending_provider';
+    if (pm.enabled) {
+      try { await ensureProviderDomain(userId, d); await pm.createUser({ local: lp, domain: d.name, password }); }
+      catch (e) { await db.run("DELETE FROM mailboxes WHERE id = ? AND provider_status = 'creating'", bid); throw e; }
+      status = 'active';
+      await db.run("UPDATE mailboxes SET provider_status = 'active' WHERE id = ?", bid);
+    }
     await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'mail-plus', `Boîte ${address} créée`, now());
     return { mailbox: box(await db.get('SELECT * FROM mailboxes WHERE id = ?', bid)), initialPassword: status === 'active' && !chosenPw ? password : null, providerReady: status === 'active' };
   }
@@ -160,10 +174,12 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     const target = await db.get('SELECT * FROM mailboxes WHERE user_id = ? AND address = ?', userId, t);
     if (!target) throw new HttpError(400, 'La destination doit être l’une de vos boîtes.', 'invalid_target');
     if ((await db.get('SELECT 1 FROM mailboxes WHERE address = ?', f)) || (await db.get('SELECT 1 FROM aliases WHERE from_addr = ?', f))) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
+    if (pm.enabled && target.provider_status !== 'active') throw new HttpError(409, 'La boîte de destination n’est pas active (en attente ou suspendue) : créez l’alias quand elle fonctionne.', 'target_inactive');
     let ref = '';
-    if (pm.enabled && target.provider_status === 'active') ref = String((await pm.createRoutingRule({ domain: m[2], local: m[1], targets: [t] })).id || '');
+    if (pm.enabled) ref = String((await pm.createRoutingRule({ domain: m[2], local: m[1], targets: [t] })).id || '');
     const aid = id('als');
-    await db.run('INSERT INTO aliases (id, user_id, from_addr, to_addr, provider_ref) VALUES (?,?,?,?,?)', aid, userId, f, t, ref);
+    try { await db.run('INSERT INTO aliases (id, user_id, from_addr, to_addr, provider_ref) VALUES (?,?,?,?,?)', aid, userId, f, t, ref); }
+    catch (e) { if (ref) await pm.deleteRoutingRule(ref).catch(() => log('warn', 'orphan_routing_rule', { alias: f })); throw e; }
     return alias(await db.get('SELECT * FROM aliases WHERE id = ?', aid));
   }
   async function removeAlias(userId, aliasId) {
