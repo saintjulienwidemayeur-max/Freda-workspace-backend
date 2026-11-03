@@ -25,6 +25,8 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     try { avail = await registrar.checkAvailability(candidates); }
     catch (e) { log('error', 'search_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
     const free = new Map(avail.available.filter(sellable).map((d) => [d.domain, d]));
+    const exactName = n.label + primary, got = avail.available.find((d) => d.domain === exactName);
+    log('info', 'search_done', { exact: exactName, asked: candidates.length, available: avail.available.length, unavailable: avail.unavailable.length, invalid: avail.invalid.length, exactStatus: got ? (sellable(got) ? 'free' : 'filtered') : avail.unavailable.includes(exactName) ? 'taken' : avail.invalid.includes(exactName) ? 'invalid' : 'absent', exactPremium: got ? got.premium : undefined, exactDuration: got ? got.duration : undefined });
     const toResult = (label, tld) => {
       const p = book[tld] || book['.com'];
       return { domain: label + tld, label, tld, available: free.has(label + tld), price: p.price, renew: p.renew, included: false };
