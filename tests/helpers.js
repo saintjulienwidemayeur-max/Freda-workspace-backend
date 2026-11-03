@@ -123,6 +123,47 @@ async function fakePurelymail(state) {
   return { calls, url: url + '/api/v0' };
 }
 
+/** Faux Stripe : contrôle le contrat réel (Bearer, formulaire imbriqué, champs obligatoires, clés d'idempotence) et simule paiement, refus, 3-D Secure. */
+async function fakeStripe(state) {
+  const calls = [];
+  state.sessions = {}; state.customers = 0; state.refunds = []; state.detached = []; state.pis = {};
+  const readRaw = (req) => new Promise((resolve) => { const c = []; req.on('data', (d) => c.push(d)); req.on('end', () => resolve(Buffer.concat(c).toString())); });
+  const err = (res, status, e) => json(res, status, { error: { type: 'card_error', ...e } });
+  const server = http.createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://x');
+    const f = Object.fromEntries(new URLSearchParams(req.method === 'GET' ? url.search : await readRaw(req)));
+    calls.push({ method: req.method, path: url.pathname, f, idem: req.headers['idempotency-key'] });
+    if (req.headers.authorization !== 'Bearer sk_test_fake') return err(res, 401, { type: 'invalid_request_error', message: 'bad key' });
+    if (req.method === 'POST' && !(url.pathname.endsWith('/detach')) && url.pathname !== '/v1/customers' && !req.headers['idempotency-key']) return err(res, 400, { type: 'invalid_request_error', message: 'idempotency key missing' });
+    const p = url.pathname;
+    if (p === '/v1/customers') { state.customers++; return json(res, 200, { id: 'cus_' + state.customers }); }
+    if (p === '/v1/checkout/sessions' && req.method === 'POST') {
+      if (f.mode !== 'payment' || f['payment_intent_data[setup_future_usage]'] !== 'off_session' || !/^cus_/.test(f.customer || '') || !/^\d+$/.test(f['line_items[0][price_data][unit_amount]'] || '') || f['line_items[0][price_data][currency]'] !== 'usd' || !f.success_url || !f.client_reference_id) return err(res, 400, { type: 'invalid_request_error', message: 'bad checkout params' });
+      const id = 'cs_' + Object.keys(state.sessions).length;
+      state.sessions[id] = { id, status: 'open', payment_status: 'unpaid', amount_total: Number(f['line_items[0][price_data][unit_amount]']), ref: f.client_reference_id, customer: f.customer, url: 'https://checkout.stripe.test/' + id };
+      return json(res, 200, state.sessions[id]);
+    }
+    let m = /^\/v1\/checkout\/sessions\/(cs_\w+)$/.exec(p);
+    if (m) { const s = state.sessions[m[1]]; if (!s) return err(res, 404, { message: 'no such session' }); return json(res, 200, s.payment_status === 'paid' ? { ...s, payment_intent: { id: 'pi_' + s.id, payment_method: { id: 'pm_' + (state.cardId || 'card1'), card: { brand: 'visa', last4: '4242', exp_month: 4, exp_year: 2031 } } } } : s); }
+    if (p === '/v1/payment_intents' && req.method === 'POST') {
+      if (f.off_session !== 'true' || f.confirm !== 'true' || !f.payment_method || !f.customer || !/^\d+$/.test(f.amount || '')) return err(res, 400, { type: 'invalid_request_error', message: 'bad pi params' });
+      if (state.authRequired) return err(res, 402, { code: 'authentication_required', message: '3DS', payment_intent: { status: 'requires_action' } });
+      if (state.decline) return err(res, 402, { code: 'card_declined', decline_code: 'generic_decline', message: 'declined' });
+      const id = 'pi_off_' + Object.keys(state.pis).length; state.pis[id] = { id, status: 'succeeded', amount: Number(f.amount), amount_received: Number(f.amount) };
+      return json(res, 200, state.pis[id]);
+    }
+    m = /^\/v1\/payment_intents\/(pi_\w+)$/.exec(p);
+    if (m) return state.pis[m[1]] ? json(res, 200, state.pis[m[1]]) : err(res, 404, { message: 'no such pi' });
+    if (p === '/v1/refunds') { if (!f.payment_intent) return err(res, 400, { type: 'invalid_request_error', message: 'payment_intent missing' }); state.refunds.push(f); return json(res, 200, { id: 're_1' }); }
+    m = /^\/v1\/payment_methods\/(\w+)\/detach$/.exec(p);
+    if (m) { state.detached.push(m[1]); return json(res, 200, { id: m[1] }); }
+    err(res, 404, { message: 'unknown ' + p });
+  });
+  const url = await listen(server);
+  closers.push(() => { server.closeAllConnections(); server.close(); });
+  return { calls, url };
+}
+
 /** Application complète sur une base SQLite en mémoire + tous les faux services. */
 async function setup(over = {}) {
   const state = { taken: ['pris.com'], premium: [], longTerm: [], balance: 500, failRegister: [], failRenew: false, registerCode: 300, lockCode: 300, dns: [], paid: new Set(), paidAmount: {}, lastAmount: {}, paymDown: false };
@@ -131,12 +172,15 @@ async function setup(over = {}) {
   const google = await fakeGoogle();
   const pmState = { fail: false };
   const pm = await fakePurelymail(pmState);
+  const stState = {};
+  const stripe = await fakeStripe(stState);
   const env = {
     NAMESILO_API_KEY: 'test-key', NAMESILO_BASE_URL: ns.url, NAMESILO_MODE: 'live', AUTH_MODE: 'demo', DB_FILE: ':memory:',
     PRICE_MARKUP_PERCENT: '30', PRICE_MIN_MARKUP: '1.5', DOMAIN_TLDS: '.com,.net,.org,.io,.xyz', JWT_SECRET: 'j'.repeat(40),
     PAYM_CLIENT_ID: 'cid', PAYM_CLIENT_SECRET: 'sec', PAYM_BASE_URL: paym.url, APP_URL: 'https://site.test', API_URL: 'https://api.test',
     GOOGLE_CLIENT_ID: 'gid', GOOGLE_CLIENT_SECRET: 'gsec', GOOGLE_TOKEN_URL: google + '/token', GOOGLE_USERINFO_URL: google + '/userinfo',
-    PURELYMAIL_API_KEY: 'pm-key', PURELYMAIL_BASE_URL: pm.url, ...over.env,
+    PURELYMAIL_API_KEY: 'pm-key', PURELYMAIL_BASE_URL: pm.url,
+    ...(over.stripe ? { STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_test', STRIPE_BASE_URL: stripe.url } : {}), ...over.env,
   };
   const cfg = loadConfig(env);
   const cfgMailer = createMailer(cfg, () => {});
@@ -154,7 +198,7 @@ async function setup(over = {}) {
   const api = (path, opts = {}) => fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.as ? { 'X-Demo-User': opts.as } : {}), ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined, redirect: opts.redirect || 'follow' });
   const as = (email = 'paul@example.com') => (path, opts = {}) => api(path, { ...opts, as: email });
   closers.push(() => { app.closeAllConnections(); app.close(); try { app.app.db.close(); } catch (e) { /* déjà fermée */ } });
-  return { api, as, user: as(), state, ns, paym, pm, pmState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
+  return { api, as, user: as(), state, ns, paym, pm, pmState, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
 }
 
 const closeAll = () => closers.splice(0).forEach((c) => { try { c(); } catch (e) { /* ignoré */ } });

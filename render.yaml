@@ -45,6 +45,10 @@ services:
         sync: false
       - key: PAYM_CLIENT_SECRET
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
       - key: BREVO_API_KEY
         sync: false
       - key: PURELYMAIL_API_KEY

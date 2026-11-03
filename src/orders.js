@@ -87,7 +87,9 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
     }
 
     let method = body.method;
-    if (!method && body.methodId) { const pm = db.get('SELECT type FROM payment_methods WHERE id = ? AND user_id = ?', String(body.methodId), user.id); if (pm) method = pm.type; }
+    let methodRow = null;
+    if (body.methodId) { methodRow = db.get('SELECT id, type, stripe_pm FROM payment_methods WHERE id = ? AND user_id = ?', String(body.methodId), user.id); if (methodRow && !method) method = methodRow.type; }
+    if (!(methodRow && methodRow.type === 'card' && methodRow.stripe_pm && method === 'card')) methodRow = null;
     method = method || 'all';
 
     const oid = 'ord_' + crypto.randomBytes(8).toString('hex');
@@ -100,13 +102,14 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
     });
 
     let charge;
-    try { charge = await payments.create({ amount, currency: 'USD', method, reference, userId: user.id, orderId: oid }); }
+    const label = { domain: 'Freda Workspace — nom de domaine', subscription: 'Freda Workspace — offre Freda Mail', renewal: 'Freda Workspace — renouvellement de domaine' }[kind];
+    try { charge = await payments.create({ amount, currency: 'USD', method, reference, userId: user.id, orderId: oid, methodId: methodRow ? methodRow.id : null, system, label }); }
     catch (e) {
       setOrder(oid, { status: 'payment_failed', error: e.message });
       if (e instanceof HttpError) throw e;
       throw new HttpError(e instanceof PaymentError ? e.status : 502, e instanceof PaymentError ? e.message : 'Le paiement a échoué.', 'payment_failed');
     }
-    setOrder(oid, { charge_id: charge.providerRef || '', redirect_url: charge.redirectUrl || '', payload: { ...payload, amountHtg: charge.amountHtg } });
+    setOrder(oid, { charge_id: charge.providerRef || '', redirect_url: charge.redirectUrl || '', payload: { ...payload, amountHtg: charge.amountHtg, amountCents: charge.amountCents } });
     if (charge.status === 'paid') {
       const res = await fulfill(oid);
       if (res.orderStatus === 'refunded') throw new HttpError(502, 'L’enregistrement a échoué. Votre paiement est remboursé.', 'registration_failed');
@@ -118,16 +121,31 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
 
   /* ---------- Confirmation du paiement ---------- */
   async function checkPayment(o) {
-    if (Date.now() - new Date(o.created_at).getTime() > EXPIRE_MS) { setOrder(o.id, { status: 'expired', error: 'Paiement non reçu à temps.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
     let v;
     try { v = await payments.verify({ reference: o.reference, order: o }); }
-    catch (e) { log('warn', 'verify_failed', { reference: o.reference }); setOrder(o.id, { last_check: Date.now() }); return o; }
+    catch (e) { log('warn', 'verify_failed', { reference: o.reference }); v = null; }
     setOrder(o.id, { last_check: Date.now() });
-    if (v.status !== 'paid') return o;
-    const expectedHtg = parse(o).payload.amountHtg;
-    if (expectedHtg && v.amountHtg && v.amountHtg < expectedHtg * 0.99) { alert('error', 'Montant Pay\'m inférieur à la commande', { reference: o.reference, expectedHtg, paidHtg: v.amountHtg }); setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
-    await fulfill(o.id);
-    return db.get('SELECT * FROM orders WHERE id = ?', o.id);
+    if (v && v.status === 'paid') {
+      const p = parse(o).payload;
+      if (p.amountHtg && v.amountHtg && v.amountHtg < p.amountHtg * 0.99) { alert('error', 'Montant Pay\'m inférieur à la commande', { reference: o.reference, expectedHtg: p.amountHtg, paidHtg: v.amountHtg }); setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+      if (p.amountCents && v.amountCents && v.amountCents < p.amountCents) { alert('error', 'Montant carte inférieur à la commande', { reference: o.reference, expectedCents: p.amountCents, paidCents: v.amountCents }); setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+      await fulfill(o.id);
+      return db.get('SELECT * FROM orders WHERE id = ?', o.id);
+    }
+    // l'expiration n'est prononcée qu'APRÈS une vérification : un paiement tardif n'est jamais perdu
+    if (v && v.status === 'failed') { setOrder(o.id, { status: 'payment_failed', error: 'Le paiement n’a pas abouti.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+    if (Date.now() - new Date(o.created_at).getTime() > EXPIRE_MS) { setOrder(o.id, { status: 'expired', error: 'Paiement non reçu à temps.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+    return o;
+  }
+
+  /** Confirmation déclenchée par un webhook : on ne fait JAMAIS confiance au contenu de l'événement, on revérifie chez le fournisseur. */
+  async function confirmByReference(reference) {
+    let o = db.get('SELECT * FROM orders WHERE reference = ?', String(reference || ''));
+    if (!o) return { found: false };
+    if (o.status === 'expired') { setOrder(o.id, { status: 'awaiting_payment', error: '' }); o = db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+    if (o.status !== 'awaiting_payment') return { found: true, status: o.status };
+    o = await checkPayment(o);
+    return { found: true, status: o.status };
   }
 
   async function status(userId, orderId) {
@@ -263,7 +281,7 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
     mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
   }
 
-  return { create, status, sweep, fulfill, summarize, planAmount };
+  return { create, status, sweep, fulfill, summarize, planAmount, confirmByReference, cardsEnabled: !!payments.cards };
 }
 
 module.exports = { createOrders };

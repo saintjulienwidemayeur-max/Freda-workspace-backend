@@ -124,7 +124,7 @@ test('Google OAuth : crée le compte, rattache l’e-mail existant, refuse un é
   assert.strictEqual((await t.api('/api/auth/oauth/apple', { redirect: 'manual' })).status, 501);
 });
 
-test('moyens de paiement : MonCash/NatCash par numéro, masqué, défaut, suppression ; carte refusée (501)', async () => {
+test('moyens de paiement : MonCash/NatCash par numéro, masqué, défaut, suppression ; carte : enregistrement direct refusé (400)', async () => {
   const t = await setup();
   const add = (b) => t.user('/api/payment-methods', { method: 'POST', body: b });
   const a = await (await add({ type: 'moncash', phone: '37 12 34 56' })).json();
@@ -132,7 +132,7 @@ test('moyens de paiement : MonCash/NatCash par numéro, masqué, défaut, suppre
   assert.strictEqual(a.methods[0].default, true);
   assert.strictEqual((await add({ type: 'moncash', phone: '37123456' })).status, 409);
   assert.strictEqual((await add({ type: 'natcash', phone: '123' })).status, 400);
-  assert.strictEqual((await add({ type: 'card', brand: 'Visa' })).status, 501);
+  assert.strictEqual((await add({ type: 'card', brand: 'Visa' })).status, 400);
   const b = await (await add({ type: 'natcash', phone: '48 00 11 22' })).json();
   const id2 = b.methods.find((m) => m.type === 'natcash').id;
   const def = await (await t.user('/api/payment-methods/' + id2, { method: 'PATCH' })).json();

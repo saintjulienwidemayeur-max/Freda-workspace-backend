@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 59 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 72 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -16,6 +16,7 @@ AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local 
 | **Domaines** | `GET /api/domains/search`, `POST /api/checkout` (`kind: domain`), `GET /api/domains`, `PATCH /api/domains/:d` (verrou, rappels), `POST /api/domains/:d/auth-code` | NameSilo. Prix, disponibilité et solde recalculés côté serveur. |
 | **Offre Freda Mail** | `POST /api/checkout` (`kind: subscription`) | Prix serveur (annuel = 10 mois), zone e-mail, première boîte, facture. |
 | **Renouvellement** | `POST /api/checkout` (`kind: renewal`) | `renewDomain` après paiement. |
+| **Cartes (Stripe)** | `POST /api/checkout` (`method: card`), `POST /api/webhooks/stripe`, `GET/DELETE /api/payment-methods` | Checkout hébergé par Stripe (aucune donnée de carte chez nous), carte enregistrée pour la suite. **Prélèvement automatique** des offres Freda Mail à l'échéance (3 tentatives : échéance, +3 j, +5 j), remboursement automatique, webhook signé revérifié chez Stripe. |
 | **Paiement** | `GET /api/orders/:id` | Pay'm est **asynchrone** : redirection → confirmation par vérification (client + balayage chaque minute). |
 | **DNS** | `GET/POST /api/domains/:d/dns`, `PATCH/DELETE …/dns/:id`, `POST …/dns/autofix`, `GET …/dns/check` | Répercuté chez NameSilo pour les domaines achetés chez nous. Propagation = vrais résolveurs publics. |
 | **Domaine existant** | `POST /api/domains/connect`, `POST /api/domains/:d/verify` | Mode `records` : vérification DNS réelle. Mode `nameservers` : voir limites. |
@@ -31,7 +32,7 @@ AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local 
 
 ## À savoir / limites (honnêtement)
 1. **Pas de remboursement automatique Pay'm** : l'API ne renvoie pas le numéro du payeur. Un échec après paiement met la commande en `needs_attention` et déclenche une **alerte** : remboursement manuel (`GET /api/admin/orders`).
-2. **Cartes bancaires : non disponibles** (aucun processeur d'acquisition branché ; Maplerad émet des cartes, il n'encaisse pas). Réponse `501`.
+2. **Cartes bancaires = Stripe** : sans `STRIPE_SECRET_KEY`, réponse `501`. Format d'erreur vérifié contre `api.stripe.com`, paramètres suivis d'après la documentation officielle, mais **aucun paiement réel n'a été fait** : tester en mode test (`sk_test_…`, carte `4242 4242 4242 4242`) puis déclarer le webhook. Les domaines ne sont **pas** prélevés automatiquement (seulement les offres) ; une banque exigeant 3-D Secure sur un prélèvement automatique fait échouer la tentative (le client est prévenu et paie depuis son espace).
 3. **Renouvellement** : Pay'm ne permet pas de prélever sans action du client. Freda envoie des rappels e-mail avec un lien vers le site ; le lien de paiement est créé **au clic** (toujours frais). Domaines enregistrés avec `auto_renew=0` chez NameSilo.
 4. **Code de transfert (EPP)** : NameSilo l'envoie par e-mail au contact administratif du compte revendeur, pas au client. La demande déclenche une alerte : le support le transmet.
 5. **Domaine existant en mode `nameservers`** : exige un DNS autoritaire Freda (`NAMESERVERS`) que ce backend **ne fournit pas** (PowerDNS, Route 53, Cloudflare…). Sans lui, seul le mode `records` fonctionne.

@@ -11,6 +11,7 @@ const { templates } = require('./mailer');
 const DAY = 86400000;
 const THRESHOLDS = [[30, 1], [14, 2], [7, 4], [1, 8]];     // [jours restants, bit déjà notifié]
 const SUB_THRESHOLDS = [[5, 1], [1, 2]];
+const RETRY_AT_DAYS_LEFT = [0, -3, -5];                 // tentatives de prélèvement automatique : à l'échéance, puis +3 j et +5 j
 
 function createJobs({ cfg, db, orders, mailer, log }) {
   const daysLeft = (iso, now) => Math.ceil((new Date(iso + 'T00:00:00Z').getTime() - now.getTime()) / DAY);
@@ -34,10 +35,33 @@ function createJobs({ cfg, db, orders, mailer, log }) {
     return sent;
   }
 
+  /**
+   * Prélèvement automatique d'une offre arrivée à échéance sur la carte enregistrée (Stripe, sans action du client).
+   * Une clé d'idempotence par période ET par tentative : jamais de double débit, 3 tentatives maximum. Retourne true si l'offre est renouvelée.
+   */
+  async function autoCharge(s, now) {
+    if (!orders.cardsEnabled) return false;
+    const left = daysLeft(s.renews_at, now);
+    const attempt = RETRY_AT_DAYS_LEFT.filter((d) => left <= d).length;     // 0 = pas encore échu
+    if (!attempt) return false;
+    const card = db.get("SELECT id FROM payment_methods WHERE user_id = ? AND type = 'card' AND stripe_pm <> '' ORDER BY is_default DESC, created_at LIMIT 1", s.user_id);
+    if (!card) return false;
+    const key = `autorenew-${s.user_id}-${s.renews_at}-${attempt}`;
+    if (db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', s.user_id, key)) return false;   // déjà tentée
+    const user = db.get('SELECT * FROM users WHERE id = ?', s.user_id);
+    try {
+      const o = await orders.create({ user, system: true, idempotencyKey: key, body: { kind: 'subscription', plan: s.plan, cycle: s.cycle, renewal: true, method: 'card', methodId: card.id } });
+      log('info', 'autorenew', { userId: s.user_id, attempt, status: o.status });
+    } catch (e) { log('warn', 'autorenew_failed', { userId: s.user_id, attempt, message: e.message }); }
+    const after = db.get('SELECT renews_at FROM subscriptions WHERE user_id = ?', s.user_id);
+    return !!after && after.renews_at !== s.renews_at;
+  }
+
   async function subscriptionDue(now) {
     let sent = 0;
     const rows = db.all("SELECT s.*, u.email, u.name AS uname FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE s.status IN ('active','past_due')");
     for (const s of rows) {
+      if (s.status !== 'suspended' && await autoCharge(s, now)) continue;   // renouvelée automatiquement : ni « past_due » ni rappel
       const left = daysLeft(s.renews_at, now);
       const user = { name: s.uname };
       const link = `${cfg.appUrl}/espace/facturation.html?renew=1`;

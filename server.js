@@ -13,6 +13,7 @@ const { createAccounts } = require('./src/accounts');
 const { createDomainCatalog } = require('./src/domains');
 const { createDns } = require('./src/dns');
 const { createMail } = require('./src/mail');
+const { verifySignature } = require('./src/stripe');
 const { createOrders } = require('./src/orders');
 const { createJobs } = require('./src/jobs');
 const { createWorkspace } = require('./src/workspace');
@@ -41,7 +42,7 @@ function createApp(deps) {
   const registrar = deps.registrar || createClient(cfg.namesilo);
   const mailer = deps.mailer || createMailer(cfg, logger);
   const alert = deps.alert || createAlerts(cfg, logger);
-  const payments = deps.payments || createPayments(cfg, logger);
+  const payments = deps.payments || createPayments(cfg, logger, { db });
   const priceBook = createPriceBook({ registrar, cfg });
   const catalog = createDomainCatalog({ cfg, registrar, priceBook, alert, log: logger });
   const accounts = createAccounts({ cfg, db, mailer, log: logger });
@@ -60,7 +61,7 @@ function createApp(deps) {
   const route = (method, pattern, handler, opts = {}) => routes.push({ method, re: new RegExp('^' + pattern.replace(/:[a-zA-Z]+/g, '([^/]+)') + '$'), handler, opts });
 
   /* ----- public ----- */
-  route('GET', '/api/health', async () => ({ ok: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled }));
+  route('GET', '/api/health', async () => ({ ok: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled, cards: !!payments.cards }));
   route('GET', '/api/domains/search', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.search(c.url.searchParams.get('q')); });
   route('POST', '/api/auth/signup', async (c) => { limit(L.auth, c.ip); return accounts.signup(await c.body()); });
   route('POST', '/api/auth/login', async (c) => { limit(L.auth, c.ip); return accounts.login(await c.body(), c.ip); });
@@ -91,7 +92,26 @@ function createApp(deps) {
   route('GET', '/api/payment-methods', async (c) => ({ methods: accounts.listMethods(c.user.id) }), auth);
   route('POST', '/api/payment-methods', async (c) => ({ methods: accounts.addMethod(c.user.id, await c.body()) }), auth);
   route('PATCH', '/api/payment-methods/:id', async (c, p) => ({ methods: accounts.setDefaultMethod(c.user.id, p[0]) }), auth);
-  route('DELETE', '/api/payment-methods/:id', async (c, p) => ({ methods: accounts.removeMethod(c.user.id, p[0]) }), auth);
+  route('DELETE', '/api/payment-methods/:id', async (c, p) => {
+    const m = db.get("SELECT stripe_pm FROM payment_methods WHERE id = ? AND user_id = ? AND stripe_pm <> ''", p[0], c.user.id);
+    const methods = accounts.removeMethod(c.user.id, p[0]);
+    if (m && payments.stripe) await payments.stripe.detach(m.stripe_pm).catch(() => logger('warn', 'stripe_detach_failed', {}));   // la carte ne pourra plus être débitée
+    return { methods };
+  }, auth);
+
+  /* ----- Stripe : webhook signé (corps BRUT requis pour la signature) ----- */
+  route('POST', '/api/webhooks/stripe', async (c) => {
+    if (!payments.stripe) throw new HttpError(404, 'Route introuvable.', 'not_found');
+    const raw = await c.raw(256 * 1024);
+    if (!verifySignature(raw, c.req.headers['stripe-signature'], cfg.payments.stripe.webhookSecret)) throw new HttpError(400, 'Signature invalide.', 'bad_signature');
+    let event; try { event = JSON.parse(raw.toString('utf8')); } catch (e) { throw new HttpError(400, 'JSON invalide.'); }
+    if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
+      const obj = (event.data && event.data.object) || {};
+      const ref = obj.client_reference_id || (obj.metadata && obj.metadata.reference);
+      if (ref) await orders.confirmByReference(ref);   // revérifie chez Stripe ; une erreur -> 500 -> Stripe réessaie
+    }
+    return { received: true };
+  });
   route('GET', '/api/invoices', async (c) => ({ invoices: workspace(c.user.id).invoices }), auth);
 
   /* ----- achats ----- */
@@ -132,6 +152,12 @@ function createApp(deps) {
   function limit(limiter, key, msg = 'Trop de tentatives. Réessayez dans une minute.') { if (!limiter(key)) throw new HttpError(429, msg, 'rate_limited'); }
   const tokenEq = (a, b) => { const x = Buffer.from(String(a)), y = Buffer.from(String(b)); return x.length === y.length && crypto.timingSafeEqual(x, y); };
 
+  async function readRaw(req, max) {
+    let size = 0; const chunks = [];
+    for await (const ch of req) { size += ch.length; if (size > max) throw new HttpError(413, 'Requête trop volumineuse.'); chunks.push(ch); }
+    return Buffer.concat(chunks);
+  }
+
   async function readJson(req, max = MAX_BODY) {
     let size = 0; const chunks = [];
     for await (const ch of req) { size += ch.length; if (size > max) throw new HttpError(413, 'Requête trop volumineuse.'); chunks.push(ch); }
@@ -151,7 +177,7 @@ function createApp(deps) {
       let matched = null, params = null;
       for (const r of routes) { if (r.method !== req.method) continue; const m = r.re.exec(url.pathname); if (m) { matched = r; params = m.slice(1); break; } }
       if (!matched) throw new HttpError(404, 'Route introuvable.', 'not_found');
-      const ctx = { req, url, ip, body: (max) => readJson(req, max) };
+      const ctx = { req, url, ip, body: (max) => readJson(req, max), raw: (max) => readRaw(req, max) };
       if (matched.opts.admin) {
         const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
         if (!cfg.adminToken || !m || !tokenEq(m[1], cfg.adminToken)) throw new HttpError(401, 'Accès administrateur requis.', 'unauthorized');

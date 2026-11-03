@@ -62,6 +62,11 @@ const MIGRATIONS = [
   CREATE TABLE activity (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, icon TEXT NOT NULL, text TEXT NOT NULL, at TEXT NOT NULL);
   CREATE INDEX activity_user ON activity(user_id);
   `,
+  /* 2 — Stripe : client Stripe par compte, carte Stripe par moyen de paiement */
+  `
+  ALTER TABLE users ADD COLUMN stripe_customer_id TEXT NOT NULL DEFAULT '';
+  ALTER TABLE payment_methods ADD COLUMN stripe_pm TEXT NOT NULL DEFAULT '';
+  `,
 ];
 
 function openDb(file) {

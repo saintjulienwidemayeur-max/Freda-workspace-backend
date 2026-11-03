@@ -141,7 +141,7 @@ function createAccounts({ cfg, db, mailer, log }) {
     return db.all('SELECT * FROM payment_methods WHERE user_id = ? ORDER BY is_default DESC, created_at', userId).map((m) => ({ id: m.id, type: m.type, phone: m.phone ? mask(m.phone) : '', brand: m.brand, last4: m.last4, exp: m.exp, default: !!m.is_default }));
   }
   function addMethod(userId, b) {
-    if (b.type === 'card') throw new HttpError(501, 'Les cartes bancaires ne sont pas encore disponibles. Utilisez MonCash ou NatCash.', 'card_not_available');
+    if (b.type === 'card') throw new HttpError(400, 'Une carte s’enregistre automatiquement lors de votre premier paiement par carte (saisie sécurisée chez Stripe).', 'card_via_payment');
     if (!['moncash', 'natcash'].includes(b.type)) throw new HttpError(400, 'Moyen de paiement inconnu.', 'invalid_method');
     const digits = String(b.phone || '').replace(/\D/g, '');
     const phone = digits.length === 8 ? '509' + digits : digits;

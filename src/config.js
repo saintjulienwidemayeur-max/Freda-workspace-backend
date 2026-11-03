@@ -47,6 +47,7 @@ function loadConfig(env = process.env) {
     mailer: { provider: env.MAILER || 'console', brevoKey: env.BREVO_API_KEY || '', brevoUrl: env.BREVO_URL || 'https://api.brevo.com/v3/smtp/email', senderEmail: env.MAIL_FROM || 'no-reply@fredaworkspace.com', senderName: env.MAIL_FROM_NAME || 'Freda Workspace' },
     payments: {
       provider: env.PAYMENTS_PROVIDER || 'demo',                   // demo | paym
+      stripe: { secretKey: env.STRIPE_SECRET_KEY || '', webhookSecret: env.STRIPE_WEBHOOK_SECRET || '', baseUrl: env.STRIPE_BASE_URL || 'https://api.stripe.com' },
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
     purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0' },
@@ -64,6 +65,9 @@ function assertSafe(cfg) {
   if (cfg.auth.mode === 'demo' && cfg.nodeEnv === 'production') errors.push('AUTH_MODE=demo interdit avec NODE_ENV=production.');
   if (cfg.auth.mode === 'jwt' && cfg.auth.jwtSecret.length < 32) errors.push('JWT_SECRET (32 caractères minimum) requis avec AUTH_MODE=jwt.');
   if (cfg.payments.provider === 'paym' && (!cfg.payments.paym.clientId || !cfg.payments.paym.clientSecret)) errors.push('PAYM_CLIENT_ID et PAYM_CLIENT_SECRET requis avec PAYMENTS_PROVIDER=paym.');
+  if (cfg.payments.stripe.secretKey && !/^(sk|rk)_(test|live)_/.test(cfg.payments.stripe.secretKey)) errors.push('STRIPE_SECRET_KEY invalide (attendu sk_test_… ou sk_live_…).');
+  if (cfg.payments.stripe.secretKey && !cfg.payments.stripe.webhookSecret) errors.push('STRIPE_WEBHOOK_SECRET (whsec_…) requis avec STRIPE_SECRET_KEY : sans webhook signé, les paiements par carte ne seraient confirmés que par balayage.');
+  if (cfg.nodeEnv === 'production' && /^sk_test_/.test(cfg.payments.stripe.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Stripe de TEST avec NAMESILO_MODE=live : les achats réels seraient payés avec de fausses cartes.');
   if (cfg.mailer.provider === 'brevo' && !cfg.mailer.brevoKey) errors.push('BREVO_API_KEY requise avec MAILER=brevo.');
   if (cfg.nodeEnv === 'production' && cfg.mailer.provider === 'console') errors.push('MAILER=console en production : aucun e-mail (reçus, réinitialisation de mot de passe) ne partirait.');
   if (cfg.namesilo.nameservers.length === 1) errors.push('NAMESERVERS doit contenir au moins 2 serveurs (règle NameSilo).');
