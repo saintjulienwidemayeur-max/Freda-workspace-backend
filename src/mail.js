@@ -1,9 +1,11 @@
 /**
  * Freda Mail : boîtes et alias (Purelymail).
  *
- * ⚠ Adaptateur NON vérifié : la documentation Purelymail n'était pas accessible pendant le développement. Il suit l'API v0 telle que
- * connue (POST JSON, en-tête « Purelymail-Api-Token », réponses { type: 'success' | 'error', result, code, message }) :
- * createUser, deleteUser, createRoutingRule, deleteRoutingRule. Validez chaque appel avec https://purelymail.com/docs/api avant la production.
+ * Adaptateur aligné sur la spécification OpenAPI de l'API v0 (POST JSON, en-tête « Purelymail-Api-Token », succès { result }, erreur { type: 'error', code, message } —
+ * format d'erreur et chemin /api/v0/* vérifiés contre purelymail.com). Points importants :
+ *  - deleteUser attend l'adresse COMPLÈTE (user@domaine) ; createUser attend la partie locale + domainName ;
+ *  - createRoutingRule : prefix = booléen, matchUser = partie locale ; la réponse est VIDE (pas d'id) -> on relit listRoutingRules ;
+ *  - un domaine doit être ajouté (addDomain) APRÈS publication du TXT de propriété (getOwnershipCode) avant tout createUser.
  * Sans PURELYMAIL_API_KEY, les boîtes sont enregistrées avec provider_status = 'pending_provider' (non utilisables) et le client est prévenu.
  */
 const crypto = require('crypto');
@@ -24,14 +26,23 @@ function createPurelymail(cfg, log) {
   }
   return {
     enabled,
+    listDomains: async () => ((await call('listDomains', { includeShared: false })).domains || []).map((d) => String(d.name).toLowerCase()),
+    ownershipCode: async () => String((await call('getOwnershipCode', {})).code || ''),
+    addDomain: (domain) => call('addDomain', { domainName: domain }),
     createUser: ({ local, domain, password }) => call('createUser', { userName: local, domainName: domain, password, enablePasswordReset: false, enableSearchIndexing: true, sendWelcomeEmail: false }),
-    deleteUser: ({ local, domain }) => call('deleteUser', { userName: local, domainName: domain }),
-    createRoutingRule: ({ domain, prefix, targets }) => call('createRoutingRule', { domainName: domain, prefix, matchUser: true, catchall: false, targetAddresses: targets }),
+    deleteUser: ({ local, domain }) => call('deleteUser', { userName: `${local}@${domain}` }),
+    /** La réponse de createRoutingRule est vide : on retrouve la règle créée pour pouvoir la supprimer plus tard. */
+    async createRoutingRule({ domain, local, targets }) {
+      await call('createRoutingRule', { domainName: domain, prefix: false, matchUser: local, targetAddresses: targets, catchall: false });
+      const rules = (await call('listRoutingRules', {})).rules || [];
+      const hit = rules.filter((r) => String(r.domainName).toLowerCase() === domain && r.matchUser === local && !r.prefix && !r.catchall).sort((a, b) => b.id - a.id)[0];
+      return { id: hit ? hit.id : '' };
+    },
     deleteRoutingRule: (ref) => call('deleteRoutingRule', { routingRuleId: Number(ref) }),
   };
 }
 
-function createMail({ cfg, db, log, provider }) {
+function createMail({ cfg, db, log, provider, dns }) {
   const pm = provider || createPurelymail(cfg, log);
   const box = (r) => ({ id: r.id, address: r.address, name: r.name, usedGb: r.used_gb, created: r.created_at.slice(0, 10), lastLogin: r.last_login ? r.last_login.slice(0, 10) : null, role: r.role, status: r.provider_status });
   const alias = (r) => ({ id: r.id, from: r.from_addr, to: r.to_addr });
@@ -46,6 +57,23 @@ function createMail({ cfg, db, log, provider }) {
     if (!d) throw new HttpError(404, 'Domaine introuvable dans votre espace.', 'not_found');
     return d;
   };
+
+  /**
+   * Garantit que le domaine existe chez Purelymail : publie le TXT de propriété (zone gérée par Freda) puis addDomain.
+   * Le DNS met parfois quelques minutes à se propager : tant que Purelymail refuse, on répond 409 (réessayer) sans créer de boîte fantôme.
+   */
+  async function ensureProviderDomain(userId, d) {
+    if (!pm.enabled) return;
+    if ((await pm.listDomains()).includes(d.name)) return;
+    const code = await pm.ownershipCode();
+    if (code && dns) await dns.ensureOwnership(userId, d.name, code);
+    try { await pm.addDomain(d.name); }
+    catch (e) {
+      if (!(e instanceof HttpError)) throw e;
+      log('warn', 'purelymail_domain_pending', { domain: d.name });
+      throw new HttpError(409, `Le domaine ${d.name} est en cours de vérification (propagation DNS, jusqu’à 15 minutes). Réessayez dans quelques minutes.`, 'domain_pending_verification');
+    }
+  }
 
   const listBoxes = (userId) => db.all('SELECT * FROM mailboxes WHERE user_id = ? ORDER BY created_at', userId).map(box);
   const listAliases = (userId) => db.all('SELECT * FROM aliases WHERE user_id = ? ORDER BY from_addr', userId).map(alias);
@@ -63,7 +91,7 @@ function createMail({ cfg, db, log, provider }) {
     if (db.get('SELECT 1 FROM mailboxes WHERE address = ?', address) || db.get('SELECT 1 FROM aliases WHERE from_addr = ?', address)) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
     const password = crypto.randomBytes(12).toString('base64url');
     let status = 'pending_provider';
-    if (pm.enabled) { await pm.createUser({ local: lp, domain: d.name, password }); status = 'active'; }
+    if (pm.enabled) { await ensureProviderDomain(userId, d); await pm.createUser({ local: lp, domain: d.name, password }); status = 'active'; }
     const bid = id('mbx');
     db.run('INSERT INTO mailboxes (id, user_id, domain, local_part, address, name, role, provider_status, created_at) VALUES (?,?,?,?,?,?,?,?,?)', bid, userId, d.name, lp, address, String(name || lp).trim().slice(0, 80), count === 0 ? 'Propriétaire' : 'Utilisateur', status, new Date().toISOString());
     db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'mail-plus', `Boîte ${address} créée`, now());
@@ -92,7 +120,7 @@ function createMail({ cfg, db, log, provider }) {
     if (!target) throw new HttpError(400, 'La destination doit être l’une de vos boîtes.', 'invalid_target');
     if (db.get('SELECT 1 FROM mailboxes WHERE address = ?', f) || db.get('SELECT 1 FROM aliases WHERE from_addr = ?', f)) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
     let ref = '';
-    if (pm.enabled && target.provider_status === 'active') ref = String((await pm.createRoutingRule({ domain: m[2], prefix: m[1], targets: [t] })).id || '');
+    if (pm.enabled && target.provider_status === 'active') ref = String((await pm.createRoutingRule({ domain: m[2], local: m[1], targets: [t] })).id || '');
     const aid = id('als');
     db.run('INSERT INTO aliases (id, user_id, from_addr, to_addr, provider_ref) VALUES (?,?,?,?,?)', aid, userId, f, t, ref);
     return alias(db.get('SELECT * FROM aliases WHERE id = ?', aid));

@@ -115,6 +115,13 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     return { added };
   }
 
+  /** Publie le TXT de propriété Purelymail (valeur fournie par getOwnershipCode). Zone du registrar : poussé chez NameSilo ; domaine externe : à ajouter par le client. */
+  async function ensureOwnership(userId, name, value) {
+    const d = ownDomain(userId, name);
+    if (db.get('SELECT 1 FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? AND value = ?', d.id, 'TXT', '@', value)) return;
+    await save(userId, name, { type: 'TXT', name: '@', value, ttl: 3600, managed: true, role: 'OWNERSHIP' });
+  }
+
   /** Santé de la zone (même logique que le frontend). */
   function health(records) {
     const has = (p) => records.some(p);
@@ -189,7 +196,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     return { connected: true, missing: [] };
   }
 
-  return { list, save, remove, autofix, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
+  return { list, save, remove, autofix, ensureOwnership, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
 }
 
 module.exports = { createDns, MAIL_TEMPLATE, validateRecord };

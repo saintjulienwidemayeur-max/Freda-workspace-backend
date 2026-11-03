@@ -46,7 +46,7 @@ function createApp(deps) {
   const catalog = createDomainCatalog({ cfg, registrar, priceBook, alert, log: logger });
   const accounts = createAccounts({ cfg, db, mailer, log: logger });
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
-  const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider });
+  const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider, dns });
   const orders = createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger });
   const jobs = createJobs({ cfg, db, orders, mailer, log: logger });
   const workspace = createWorkspace({ db, accounts, dns, mail });

@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 57 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 59 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -35,7 +35,7 @@ AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local 
 3. **Renouvellement** : Pay'm ne permet pas de prélever sans action du client. Freda envoie des rappels e-mail avec un lien vers le site ; le lien de paiement est créé **au clic** (toujours frais). Domaines enregistrés avec `auto_renew=0` chez NameSilo.
 4. **Code de transfert (EPP)** : NameSilo l'envoie par e-mail au contact administratif du compte revendeur, pas au client. La demande déclenche une alerte : le support le transmet.
 5. **Domaine existant en mode `nameservers`** : exige un DNS autoritaire Freda (`NAMESERVERS`) que ce backend **ne fournit pas** (PowerDNS, Route 53, Cloudflare…). Sans lui, seul le mode `records` fonctionne.
-6. **Purelymail non vérifié** : documentation inaccessible pendant le développement (voir `src/mail.js`). Valider `createUser`, `deleteUser`, `createRoutingRule`, `deleteRoutingRule` avant la production. Sans `PURELYMAIL_API_KEY`, les boîtes sont `pending_provider`.
+6. **Purelymail** : adaptateur aligné sur la spécification OpenAPI de l'API v0 (chemin et format d'erreur vérifiés contre `purelymail.com`). Le domaine est ajouté automatiquement (`getOwnershipCode` → TXT publié dans la zone → `addDomain`) avant le premier `createUser`. Limites : (a) la 1re boîte d'un domaine neuf peut répondre `409 domain_pending_verification` le temps de la propagation DNS (jusqu'à 15 min) — le client réessaie ; à la souscription, la boîte n'est alors pas créée et il faut la créer ensuite depuis l'espace client ; (b) pour un domaine **externe** (mode `records`), le TXT de propriété est enregistré mais le client doit l'ajouter lui-même chez son hébergeur DNS ; (c) aucun appel réel n'a encore été fait avec une vraie clé : faire un test (`PURELYMAIL_API_KEY`) avec un domaine jetable avant la production.
 7. **Pay'm** : écrit d'après le code de `backend-fredapay` (documentation inaccessible). Faire un premier paiement de test réel.
 8. **NameSilo** : vérifié avec la référence officielle et un appel réel (clé invalide → HTTP 401 + code 110). Non documenté publiquement : table complète des codes, limites de débit, et la forme du paramètre `rrhost` pour la racine d'un domaine (on envoie `rrhost=` vide).
 9. **SQLite = une seule instance** (disque Render). Pour plusieurs instances : PostgreSQL (tout l'accès SQL passe par `src/db.js` et les modules).

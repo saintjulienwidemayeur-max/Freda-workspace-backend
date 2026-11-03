@@ -57,7 +57,7 @@ test('DNS : échec du serveur DNS -> 502 et rien d’enregistré localement', as
 test('DNS e-mail : autofix ajoute les 6 enregistrements, remplace un MX incorrect géré, est idempotent ; les enregistrements gérés sont protégés', async () => {
   const t = await withMail();
   let recs = await j(await t.user('/api/domains/neuf.com/dns'));
-  assert.strictEqual(recs.filter((r) => r.managed).length, 6);
+  assert.strictEqual(recs.filter((r) => r.managed && r.role !== 'OWNERSHIP').length, 6);
   const mx = recs.find((r) => r.type === 'MX');
   await t.user('/api/domains/neuf.com/dns/' + mx.id, { method: 'PATCH', body: { type: 'MX', name: '@', value: 'mauvais.example.com', priority: 10 } });
   assert.strictEqual((await t.user('/api/domains/neuf.com/dns/' + mx.id, { method: 'DELETE' })).status, 400, 'enregistrement géré non supprimable');
@@ -144,13 +144,39 @@ test('boîtes : création (Purelymail), quota de l’offre, doublon, alias, supp
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'x', domain: 'pas-a-moi.com' } })).status, 404);
   const al = await t.user('/api/aliases', { method: 'POST', body: { from: 'info@neuf.com', to: 'contact@neuf.com' } });
   assert.strictEqual(al.status, 200);
-  assert.strictEqual(t.pm.calls.find((c) => c.path.endsWith('/createRoutingRule')).body.prefix, 'info');
+  const rule = t.pm.calls.find((c) => c.path.endsWith('/createRoutingRule')).body;
+  assert.deepStrictEqual([rule.prefix, rule.matchUser, rule.catchall], [false, 'info', false], 'prefix = booléen, matchUser = partie locale');
+  assert.ok(t.db.get("SELECT provider_ref FROM aliases WHERE from_addr = 'info@neuf.com'").provider_ref, 'id de la règle retrouvé via listRoutingRules');
   assert.strictEqual((await t.user('/api/aliases', { method: 'POST', body: { from: 'info@neuf.com', to: 'contact@neuf.com' } })).status, 409);
   assert.strictEqual((await t.user('/api/aliases', { method: 'POST', body: { from: 'x@neuf.com', to: 'inconnu@neuf.com' } })).status, 400);
   const w = await j(await t.user('/api/workspace'));
   assert.strictEqual(w.aliases.length, 1);
   assert.strictEqual((await t.user('/api/mailboxes/' + created.mailbox.id, { method: 'DELETE' })).status, 200);
-  assert.ok(t.pm.calls.some((c) => c.path.endsWith('/deleteUser')));
+  assert.strictEqual(t.pm.calls.find((c) => c.path.endsWith('/deleteUser')).body.userName, 'ventes@neuf.com', 'deleteUser reçoit l’adresse complète');
+});
+
+test('Purelymail : le domaine est ajouté une seule fois, avec le TXT de propriété publié dans la zone', async () => {
+  const t = await withMail();
+  const names = t.pm.calls.map((c) => c.path.replace('/api/v0/', ''));
+  assert.ok(names.indexOf('getOwnershipCode') < names.indexOf('addDomain') && names.indexOf('addDomain') < names.indexOf('createUser'), 'ownership -> addDomain -> createUser');
+  const txt = t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'");
+  assert.strictEqual(txt.length, 1);
+  assert.strictEqual(txt[0].value, 'purelymail_ownership_proof=abc123');
+  await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'business', cycle: 'monthly' } });
+  await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } });
+  assert.strictEqual(t.pm.calls.filter((c) => c.path.endsWith('/addDomain')).length, 1, 'domaine déjà connu -> pas de second addDomain');
+});
+
+test('Purelymail : TXT pas encore propagé -> 409 réessayable, aucune boîte fantôme, puis succès', async () => {
+  const t = await withDomain();
+  await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'business', cycle: 'monthly' } });
+  t.pmState.verifiedTxt = false;
+  const r = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } });
+  assert.strictEqual(r.status, 409);
+  assert.strictEqual((await j(r)).code, 'domain_pending_verification');
+  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE local_part = ?', 'ventes').n, 0);
+  t.pmState.verifiedTxt = true;
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } })).status, 200);
 });
 
 test('boîtes : sans offre active -> 402 ; échec Purelymail -> 502 sans boîte fantôme ; sans clé Purelymail -> boîte « en attente »', async () => {

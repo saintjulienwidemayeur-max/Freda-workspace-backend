@@ -78,14 +78,45 @@ async function fakeGoogle() {
   return url;
 }
 
+/** Faux Purelymail : applique les mêmes contraintes que la spécification OpenAPI (types des champs) pour détecter toute dérive de l'adaptateur. */
 async function fakePurelymail(state) {
   const calls = [];
+  state.domains = state.domains || [];
+  state.rules = state.rules || [];
+  state.users = state.users || [];
+  state.verifiedTxt = state.verifiedTxt === undefined ? true : state.verifiedTxt;
+  const bad = (res, msg) => json(res, 200, { type: 'error', code: 'invalidParameter', message: msg });
   const server = http.createServer(async (req, res) => {
     const b = await readBody(req);
     calls.push({ path: req.url, body: b, token: req.headers['purelymail-api-token'] });
+    if (req.headers['purelymail-api-token'] !== 'pm-key') return json(res, 200, { type: 'error', code: 'invalidToken', message: 'bad token' });
     if (state.fail) return json(res, 500, { type: 'error', code: 'x', message: 'boom' });
-    if (req.url.endsWith('/createRoutingRule')) return json(res, 200, { type: 'success', result: { id: 77 } });
-    json(res, 200, { type: 'success', result: {} });
+    const op = req.url.replace('/api/v0/', '');
+    const str = (v) => typeof v === 'string' && v.length > 0;
+    switch (op) {
+      case 'listDomains': return json(res, 200, { type: 'success', result: { domains: state.domains.map((name) => ({ name })) } });
+      case 'getOwnershipCode': return json(res, 200, { type: 'success', result: { code: 'purelymail_ownership_proof=abc123' } });
+      case 'addDomain':
+        if (!str(b.domainName)) return bad(res, 'domainName');
+        if (!state.verifiedTxt) return json(res, 200, { type: 'error', code: 'ownershipNotVerified', message: 'TXT missing' });
+        state.domains.push(b.domainName); return json(res, 200, { type: 'success', result: {} });
+      case 'createUser':
+        if (!str(b.userName) || b.userName.includes('@') || !str(b.domainName) || !str(b.password)) return bad(res, 'createUser: userName = partie locale');
+        if (!state.domains.includes(b.domainName)) return json(res, 200, { type: 'error', code: 'domainNotFound', message: 'add domain first' });
+        state.users.push(`${b.userName}@${b.domainName}`); return json(res, 200, { type: 'success', result: {} });
+      case 'deleteUser':
+        if (!str(b.userName) || !b.userName.includes('@')) return bad(res, 'deleteUser: userName = adresse complète');
+        return json(res, 200, { type: 'success', result: {} });
+      case 'createRoutingRule':
+        if (!str(b.domainName) || typeof b.prefix !== 'boolean' || !str(b.matchUser) || !Array.isArray(b.targetAddresses) || !b.targetAddresses.length) return bad(res, 'createRoutingRule: prefix booléen, matchUser chaîne');
+        state.rules.push({ id: 100 + state.rules.length, domainName: b.domainName, prefix: b.prefix, matchUser: b.matchUser, targetAddresses: b.targetAddresses, catchall: !!b.catchall });
+        return json(res, 200, { type: 'success', result: {} });
+      case 'listRoutingRules': return json(res, 200, { type: 'success', result: { rules: state.rules } });
+      case 'deleteRoutingRule':
+        if (typeof b.routingRuleId !== 'number') return bad(res, 'routingRuleId numérique');
+        state.rules = state.rules.filter((r) => r.id !== b.routingRuleId); return json(res, 200, { type: 'success', result: {} });
+      default: return json(res, 404, { type: 'error', code: 'unknown', message: op });
+    }
   });
   const url = await listen(server);
   closers.push(() => { server.closeAllConnections(); server.close(); });

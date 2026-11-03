@@ -105,7 +105,7 @@ test('offre Freda Mail : prix serveur (mensuel / annuel = 10 mois), abonnement, 
   await t.app.app.orders.sweep();
   const w = await (await t.user('/api/workspace')).json();
   assert.strictEqual(w.plan.id, 'business'); assert.strictEqual(w.plan.cycle, 'yearly'); assert.strictEqual(w.plan.status, 'active');
-  assert.strictEqual(w.dns['neuf.com'].filter((r) => r.managed).length, 6, 'enregistrements e-mail ajoutés');
+  assert.strictEqual(w.dns['neuf.com'].filter((r) => r.managed && r.role !== 'OWNERSHIP').length, 6, 'enregistrements e-mail ajoutés');
   assert.strictEqual(w.mailboxes[0].address, 'contact@neuf.com');
   assert.ok(w.invoices.some((i) => i.label === 'Business — annuel' && i.amount === 99.9));
   const pwMail = t.mailer.sent.find((m) => /première boîte/.test(m.subject));
