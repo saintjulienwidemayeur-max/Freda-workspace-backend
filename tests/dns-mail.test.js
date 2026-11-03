@@ -29,7 +29,7 @@ test('DNS : ajout, modification, suppression répercutés chez NameSilo (hôte r
   assert.strictEqual(upd.status, 200);
   const u = t.ns.calls.find((c) => c.op === 'dnsUpdateRecord').q;
   assert.deepStrictEqual([u.rrid, u.rrhost, u.rrvalue], ['r1', 'www', '76.76.21.22']);
-  assert.strictEqual(t.db.get('SELECT provider_id FROM dns_records WHERE id = ?', rec.id).provider_id, 'r2', 'le record_id NameSilo change après chaque mise à jour');
+  assert.strictEqual((await t.db.get('SELECT provider_id FROM dns_records WHERE id = ?', rec.id)).provider_id, 'r2', 'le record_id NameSilo change après chaque mise à jour');
   assert.strictEqual((await t.user('/api/domains/neuf.com/dns/' + rec.id, { method: 'DELETE' })).status, 200);
   assert.ok(t.ns.calls.some((c) => c.op === 'dnsDeleteRecord' && c.q.rrid === 'r2'));
   assert.strictEqual((await j(await t.user('/api/domains/neuf.com/dns'))).length, 0);
@@ -51,7 +51,7 @@ test('DNS : échec du serveur DNS -> 502 et rien d’enregistré localement', as
   const bad = t.app.app.registrar;
   bad.dnsAdd = async () => { throw Object.assign(new Error('x'), { code: 280 }); };
   assert.strictEqual((await t.user('/api/domains/neuf.com/dns', { method: 'POST', body: { type: 'A', name: '@', value: '1.1.1.1' } })).status, 502);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM dns_records').n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM dns_records')).n, 0);
 });
 
 test('DNS e-mail : autofix ajoute les 6 enregistrements, remplace un MX incorrect géré, est idempotent ; les enregistrements gérés sont protégés', async () => {
@@ -86,8 +86,8 @@ test('domaine existant (mode records) : ajout, zone préparée, vérification DN
   const d = await j(c);
   assert.strictEqual(d.domain, 'externe.com');
   assert.strictEqual(d.records.length, 6);
-  assert.strictEqual(t.db.get('SELECT status FROM domains').status, 'pending');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM dns_records').n, 6);
+  assert.strictEqual((await t.db.get('SELECT status FROM domains')).status, 'pending');
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM dns_records')).n, 6);
   assert.ok(!t.ns.calls.some((c2) => c2.op.startsWith('dns')), 'pas d’appel NameSilo pour un domaine externe');
   let v = await j(await t.user('/api/domains/externe.com/verify', { method: 'POST' }));
   assert.strictEqual(v.connected, false);
@@ -96,7 +96,7 @@ test('domaine existant (mode records) : ajout, zone préparée, vérification DN
   t.dnsState.txt['externe.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
   v = await j(await t.user('/api/domains/externe.com/verify', { method: 'POST' }));
   assert.strictEqual(v.connected, true);
-  assert.strictEqual(t.db.get('SELECT status FROM domains').status, 'active');
+  assert.strictEqual((await t.db.get('SELECT status FROM domains')).status, 'active');
   assert.strictEqual((await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'externe.com' } })).status, 409);
   assert.strictEqual((await t.as('autre@example.com')('/api/domains/connect', { method: 'POST', body: { domain: 'externe.com' } })).status, 409, 'actif chez un autre compte');
   assert.strictEqual((await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'pas un domaine' } })).status, 400);
@@ -122,13 +122,13 @@ test('deux comptes peuvent réclamer le même domaine en attente ; le premier à
   t.dnsState.txt['partage.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
   assert.strictEqual((await j(await t.as('autre@example.com')('/api/domains/partage.com/verify', { method: 'POST' }))).connected, true);
   assert.strictEqual((await t.user('/api/domains/partage.com/verify', { method: 'POST' })).status, 409);
-  assert.strictEqual(t.db.get("SELECT COUNT(*) AS n FROM domains WHERE name = 'partage.com' AND status = 'active'").n, 1, 'un seul propriétaire actif');
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM domains WHERE name = 'partage.com' AND status = 'active'")).n, 1, 'un seul propriétaire actif');
 });
 
 /* ---------- Freda Mail ---------- */
 test('boîtes : création (Purelymail), quota de l’offre, doublon, alias, suppression ; mot de passe initial renvoyé une seule fois', async () => {
   const t = await withMail();
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes').n, 1);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 1);
   const second = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } });
   assert.strictEqual(second.status, 403, 'Starter = 1 boîte');
   assert.match((await j(second)).message, /Starter/);
@@ -138,7 +138,7 @@ test('boîtes : création (Purelymail), quota de l’offre, doublon, alias, supp
   assert.strictEqual(ok.status, 200);
   const created = await j(ok);
   assert.ok(created.initialPassword && created.initialPassword.length >= 12);
-  assert.ok(!JSON.stringify(t.db.all('SELECT * FROM mailboxes')).includes(created.initialPassword), 'mot de passe jamais stocké');
+  assert.ok(!JSON.stringify(await t.db.all('SELECT * FROM mailboxes')).includes(created.initialPassword), 'mot de passe jamais stocké');
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } })).status, 409);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'Bad Name!', domain: 'neuf.com' } })).status, 400);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'x', domain: 'pas-a-moi.com' } })).status, 404);
@@ -146,7 +146,7 @@ test('boîtes : création (Purelymail), quota de l’offre, doublon, alias, supp
   assert.strictEqual(al.status, 200);
   const rule = t.pm.calls.find((c) => c.path.endsWith('/createRoutingRule')).body;
   assert.deepStrictEqual([rule.prefix, rule.matchUser, rule.catchall], [false, 'info', false], 'prefix = booléen, matchUser = partie locale');
-  assert.ok(t.db.get("SELECT provider_ref FROM aliases WHERE from_addr = 'info@neuf.com'").provider_ref, 'id de la règle retrouvé via listRoutingRules');
+  assert.ok((await t.db.get("SELECT provider_ref FROM aliases WHERE from_addr = 'info@neuf.com'")).provider_ref, 'id de la règle retrouvé via listRoutingRules');
   assert.strictEqual((await t.user('/api/aliases', { method: 'POST', body: { from: 'info@neuf.com', to: 'contact@neuf.com' } })).status, 409);
   assert.strictEqual((await t.user('/api/aliases', { method: 'POST', body: { from: 'x@neuf.com', to: 'inconnu@neuf.com' } })).status, 400);
   const w = await j(await t.user('/api/workspace'));
@@ -159,7 +159,7 @@ test('Purelymail : le domaine est ajouté une seule fois, avec le TXT de propri�
   const t = await withMail();
   const names = t.pm.calls.map((c) => c.path.replace('/api/v0/', ''));
   assert.ok(names.indexOf('getOwnershipCode') < names.indexOf('addDomain') && names.indexOf('addDomain') < names.indexOf('createUser'), 'ownership -> addDomain -> createUser');
-  const txt = t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'");
+  const txt = await t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'");
   assert.strictEqual(txt.length, 1);
   assert.strictEqual(txt[0].value, 'purelymail_ownership_proof=abc123');
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'business', cycle: 'monthly' } });
@@ -174,7 +174,7 @@ test('Purelymail : TXT pas encore propagé -> 409 réessayable, aucune boîte fa
   const r = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } });
   assert.strictEqual(r.status, 409);
   assert.strictEqual((await j(r)).code, 'domain_pending_verification');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE local_part = ?', 'ventes').n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE local_part = ?', 'ventes')).n, 0);
   t.pmState.verifiedTxt = true;
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } })).status, 200);
 });
@@ -185,7 +185,7 @@ test('boîtes : sans offre active -> 402 ; échec Purelymail -> 502 sans boîte 
   const noKey = await setup({ payments: demoPay, env: { PURELYMAIL_API_KEY: '' } });
   await noKey.user('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1 } });
   await noKey.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly', domain: 'neuf.com', mailbox: { local: 'contact' } } });
-  const b = noKey.db.get('SELECT provider_status FROM mailboxes');
+  const b = await noKey.db.get('SELECT provider_status FROM mailboxes');
   assert.strictEqual(b.provider_status, 'pending_provider');
 });
 
@@ -194,7 +194,7 @@ test('boîtes : panne Purelymail -> 502 et aucune boîte fantôme', async () => 
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'business', cycle: 'monthly' } });
   t.pmState.fail = true;
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } })).status, 502);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes').n, 1);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 1);
 });
 
 /* ---------- Réglages de domaine ---------- */

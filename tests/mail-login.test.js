@@ -26,8 +26,8 @@ test('mot de passe CHOISI par le client à l’achat : appliqué chez Purelymail
   assert.ok(!t.mailer.sent.some((m) => m.text.includes(PW)), 'jamais par e-mail');
   const welcome = t.mailer.sent.find((m) => /première boîte/.test(m.subject));
   assert.ok(welcome && /application/i.test(welcome.text) && !welcome.text.includes('Mot de passe initial'));
-  assert.ok(!JSON.stringify(t.db.all('SELECT * FROM orders')).includes('passwordEnc'), 'plus aucune trace, même chiffrée');
-  assert.ok(!JSON.stringify(t.db.all('SELECT * FROM orders') .concat(t.db.all('SELECT * FROM mailboxes'))).includes(PW));
+  assert.ok(!JSON.stringify(await t.db.all('SELECT * FROM orders')).includes('passwordEnc'), 'plus aucune trace, même chiffrée');
+  assert.ok(!JSON.stringify((await t.db.all('SELECT * FROM orders')) .concat(await t.db.all('SELECT * FROM mailboxes'))).includes(PW));
 });
 
 test('mot de passe trop court / identique à l’adresse : refusé AVANT tout paiement', async () => {
@@ -37,18 +37,18 @@ test('mot de passe trop court / identique à l’adresse : refusé AVANT tout pa
     const r = await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly', domain: 'neuf.com', mailbox: { local: 'contact', password } } });
     assert.strictEqual(r.status, 400); assert.strictEqual((await j(r)).code, 'weak_password');
   }
-  assert.strictEqual(t.db.get("SELECT COUNT(*) AS n FROM orders WHERE kind = 'subscription'").n, 0, 'aucune commande, aucun débit');
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM orders WHERE kind = 'subscription'")).n, 0, 'aucune commande, aucun débit');
 });
 
 test('commande échouée : le mot de passe chiffré est purgé par le balayage', async () => {
   const t = await setup({ env: { PAYMENTS_PROVIDER: 'paym' } });
   const d = await j(await t.user('/api/checkout', { method: 'POST', body: { kind: 'domain', domains: ['neuf.com'], years: 1, method: 'moncash' } }));
-  t.state.paid.add(d.reference); t.db.run('UPDATE orders SET last_check = 0'); await t.user('/api/orders/' + d.orderId);
+  t.state.paid.add(d.reference); await t.db.run('UPDATE orders SET last_check = 0'); await t.user('/api/orders/' + d.orderId);
   const r = await j(await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly', method: 'moncash', domain: 'neuf.com', mailbox: { local: 'contact', password: PW } } }));
-  assert.ok(JSON.stringify(t.db.all('SELECT payload FROM orders')).includes('passwordEnc'), 'conservé chiffré tant que le paiement est attendu');
-  t.db.run("UPDATE orders SET status = 'expired' WHERE id = ?", r.orderId);
+  assert.ok(JSON.stringify(await t.db.all('SELECT payload FROM orders')).includes('passwordEnc'), 'conservé chiffré tant que le paiement est attendu');
+  await t.db.run("UPDATE orders SET status = 'expired' WHERE id = ?", r.orderId);
   await t.app.app.jobs.run();
-  assert.ok(!JSON.stringify(t.db.all('SELECT payload FROM orders')).includes('passwordEnc'));
+  assert.ok(!JSON.stringify(await t.db.all('SELECT payload FROM orders')).includes('passwordEnc'));
 });
 
 test('création de boîte par le titulaire avec un mot de passe choisi ; sans mot de passe, un mot de passe initial est généré (compatibilité)', async () => {
@@ -71,7 +71,7 @@ test('connexion de l’app : adresse pro + mot de passe de la boîte vérifiés 
   assert.strictEqual(out.imap.host, 'imap.purelymail.com'); assert.strictEqual(out.smtp.port, 465);
   assert.ok(!JSON.stringify(out).includes(PW));
   assert.deepStrictEqual(t.imap.calls.pop(), { user: 'contact@neuf.com', pass: PW });
-  assert.ok(t.db.get('SELECT last_login FROM mailboxes').last_login);
+  assert.ok((await t.db.get('SELECT last_login FROM mailboxes')).last_login);
 });
 
 test('connexion de l’app : mauvais mot de passe / adresse inconnue -> même 401 ; adresse inconnue : aucun appel IMAP', async () => {
@@ -101,7 +101,7 @@ test('connexion de l’app : un succès remet le compteur d’échecs à zéro',
 
 test('connexion de l’app : abonnement suspendu / résilié -> 402 « abonnement inactif » ; réactivé -> mêmes identifiants refonctionnent', async () => {
   const t = await withMail();
-  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await t.app.app.jobs.run();
   const r = await t.login('contact@neuf.com', PW);
   assert.strictEqual(r.status, 402); assert.strictEqual((await j(r)).code, 'subscription_inactive');
   assert.strictEqual(t.imap.calls.length, 0, 'pas d’appel IMAP pour une boîte suspendue');
@@ -119,13 +119,13 @@ test('connexion de l’app : IMAP injoignable -> 503 (jamais « mot de passe inc
 
 test('connexion de l’app : boîte en cours d’activation -> 503 explicite', async () => {
   const t = await withMail();
-  t.db.run("UPDATE mailboxes SET provider_status = 'pending_provider'");
+  await t.db.run("UPDATE mailboxes SET provider_status = 'pending_provider'");
   assert.strictEqual((await j(await t.login('contact@neuf.com', PW))).code, 'mailbox_not_ready');
 });
 
 test('changement de mot de passe de la boîte par le titulaire du compte : appliqué chez Purelymail, ancien refusé, règles de longueur, isolation entre comptes', async () => {
   const t = await withMail();
-  const id = t.db.get('SELECT id FROM mailboxes').id;
+  const id = (await t.db.get('SELECT id FROM mailboxes')).id;
   const NEW = 'NouveauMotDePasse$77';
   assert.strictEqual((await t.as('autre@example.com')(`/api/mailboxes/${id}/password`, { method: 'POST', body: { password: NEW } })).status, 404);
   assert.strictEqual((await t.user(`/api/mailboxes/${id}/password`, { method: 'POST', body: { password: 'court' } })).status, 400);

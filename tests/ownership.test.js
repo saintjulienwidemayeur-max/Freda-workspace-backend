@@ -21,10 +21,10 @@ test('vérification du domaine (zone gérée par Freda) : TXT publié automatiqu
   let r = await j(await t.user('/api/domains/neuf.com/mail-ownership'));
   assert.deepStrictEqual([r.domain, r.external, r.managedByFreda, r.status], ['neuf.com', false, true, 'pending']);
   assert.deepStrictEqual(r.record, { type: 'TXT', name: '@', value: CODE });
-  assert.strictEqual(t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'").length, 1, 'publié dans la zone');
+  assert.strictEqual((await t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'")).length, 1, 'publié dans la zone');
   assert.ok(t.ns.calls.some((c) => c.op === 'dnsAddRecord' && /ownership/.test(JSON.stringify(c.q))), 'poussé chez NameSilo');
   await t.user('/api/domains/neuf.com/mail-ownership');
-  assert.strictEqual(t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'").length, 1, 'idempotent');
+  assert.strictEqual((await t.db.all("SELECT * FROM dns_records WHERE role = 'OWNERSHIP'")).length, 1, 'idempotent');
   t.dnsState.txt['neuf.com'] = [[CODE]];
   assert.strictEqual((await j(await t.user('/api/domains/neuf.com/mail-ownership'))).status, 'dns_ok');
   t.pmState.domains.push('neuf.com');
@@ -46,7 +46,7 @@ test('domaine EXTERNE : l’enregistrement à ajouter est fourni, jamais poussé
   assert.strictEqual(body.code, 'domain_ownership_required');
   assert.match(body.message, /hébergeur/);
   assert.deepStrictEqual(body.details, { domain: 'externe.com', record: { type: 'TXT', name: '@', value: CODE } });
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes').n, 0, 'aucune boîte fantôme');
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 0, 'aucune boîte fantôme');
   t.pmState.verifiedTxt = true;
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'contact', domain: 'externe.com' } })).status, 200, 'une fois le TXT en place, la boîte se crée');
 });

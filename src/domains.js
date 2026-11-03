@@ -58,7 +58,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     try {
       const balance = await registrar.balance();
       const needed = lines.reduce((s, l) => s + l.cost, 0);
-      if (balance < needed) { alert('error', 'Solde NameSilo insuffisant', { balance, needed }); throw new HttpError(503, 'Service momentanément indisponible. Aucun paiement n’a été effectué.', 'registrar_funds'); }
+      if (balance < needed) { await alert('error', 'Solde NameSilo insuffisant', { balance, needed }); throw new HttpError(503, 'Service momentanément indisponible. Aucun paiement n’a été effectué.', 'registrar_funds'); }
     } catch (e) { if (e instanceof HttpError) throw e; /* solde illisible : registerDomain échouera proprement */ }
     return { lines, amount };
   }

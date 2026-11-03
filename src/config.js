@@ -24,7 +24,10 @@ function loadConfig(env = process.env) {
     appUrl: (env.APP_URL || 'https://fredaworkspace.com').replace(/\/$/, ''),     // site (frontend)
     apiUrl: (env.API_URL || 'http://localhost:8787').replace(/\/$/, ''),          // URL publique de cette API (rappels OAuth)
     allowedOrigins: list(env.ALLOWED_ORIGINS, 'http://localhost:8080'),
-    dbFile: env.DB_FILE || './data/freda.db',
+    databaseUrl: env.DATABASE_URL || '',                           // PostgreSQL (Supabase : URI du « Session pooler »)
+    databasePoolMax: Number(env.DATABASE_POOL_MAX) || 10,                // connexions simultanées maximum vers PostgreSQL (Supabase : rester sous la limite du pooler)
+    databaseCa: String(env.DATABASE_CA || '').replace(/\\n/g, '\n'),   // certificat CA (PEM) pour vérifier le serveur ; vide = TLS sans vérification de l'autorité
+    dbFile: env.DB_FILE || './data/pglite',                       // sans DATABASE_URL : PostgreSQL local (PGlite), dossier de données ou « :memory: »
     adminToken: env.ADMIN_TOKEN || '',
     namesilo: {
       mode,
@@ -74,6 +77,8 @@ function loadConfig(env = process.env) {
 function assertSafe(cfg) {
   const errors = [];
   if (!cfg.namesilo.key) errors.push('NAMESILO_API_KEY manquante.');
+  if (cfg.nodeEnv === 'production' && !cfg.databaseUrl) errors.push('DATABASE_URL (PostgreSQL / Supabase) requise en production.');
+  if (cfg.databaseUrl && !/^postgres(ql)?:\/\//.test(cfg.databaseUrl)) errors.push('DATABASE_URL invalide (attendu postgresql://…).');
   if (cfg.namesilo.mode === 'live' && cfg.payments.provider === 'demo') errors.push('NAMESILO_MODE=live avec PAYMENTS_PROVIDER=demo : des domaines réels seraient achetés sans vrai paiement.');
   if (cfg.auth.mode === 'demo' && cfg.nodeEnv === 'production') errors.push('AUTH_MODE=demo interdit avec NODE_ENV=production.');
   if (cfg.auth.mode === 'jwt' && cfg.auth.jwtSecret.length < 32) errors.push('JWT_SECRET (32 caractères minimum) requis avec AUTH_MODE=jwt.');

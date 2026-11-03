@@ -326,12 +326,13 @@ async function setup(over = {}) {
   const payments = over.payments === undefined ? undefined : over.payments;
   const wrapped = payments && { ...payments, refund: async (r) => { refunds.push(r); return payments.refund ? payments.refund(r) : { id: 'rf' }; } };
   const app = createApp({ cfg, log: () => {}, mailer: cfgMailer, resolve, ...(wrapped ? { payments: wrapped } : {}), ...(over.deps || {}) });
+  await app.app.db.ready;
   const base = await listen(app);
   const api = (path, opts = {}) => fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.as ? { 'X-Demo-User': opts.as } : {}), ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined, redirect: opts.redirect || 'follow' });
   const as = (email = 'paul@example.com') => (path, opts = {}) => api(path, { ...opts, as: email });
-  closers.push(() => { try { app.app.push.stop(); } catch (e) { /* déjà arrêté */ } app.closeAllConnections(); app.close(); try { app.app.db.close(); } catch (e) { /* déjà fermée */ } });
+  closers.push(() => { try { app.app.push.stop(); } catch (e) { /* déjà arrêté */ } app.closeAllConnections(); app.close(); return app.app.db.close().catch(() => {}); });
   return { api, as, user: as(), state, ns, paym, pm, pmState, imap, smtp, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
 }
 
-const closeAll = () => closers.splice(0).forEach((c) => { try { c(); } catch (e) { /* ignoré */ } });
+const closeAll = async () => { for (const c of closers.splice(0)) { try { await c(); } catch (e) { /* ignoré */ } } };
 module.exports = { setup, closeAll };

@@ -28,20 +28,21 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     return { ...base, status: 'failed', error: o.error || undefined, ...extra };
   }
 
-  function nextInvoiceId() {
+  /** Numéro de facture unique, même avec des commandes simultanées (compteur atomique en base). */
+  async function nextInvoiceId() {
     const y = new Date().getFullYear();
-    const n = db.get('SELECT COUNT(*) AS n FROM invoices WHERE id LIKE ?', `FW-${y}-%`).n + 1;
-    return `FW-${y}-${String(n).padStart(4, '0')}`;
+    const r = await db.get('INSERT INTO counters (name, value) VALUES (?, 1) ON CONFLICT (name) DO UPDATE SET value = counters.value + 1 RETURNING value', `invoice-${y}`);
+    return `FW-${y}-${String(r.value).padStart(4, '0')}`;
   }
-  function addInvoice(userId, { label, amount, method, status = 'paid', orderId }) {
-    const invId = nextInvoiceId();
-    db.run('INSERT INTO invoices (id, user_id, date, label, amount, method, status, order_id) VALUES (?,?,?,?,?,?,?,?)', invId, userId, today(), label, amount, method, status, orderId);
+  async function addInvoice(userId, { label, amount, method, status = 'paid', orderId }) {
+    const invId = await nextInvoiceId();
+    await db.run('INSERT INTO invoices (id, user_id, date, label, amount, method, status, order_id) VALUES (?,?,?,?,?,?,?,?)', invId, userId, today(), label, amount, method, status, orderId);
     return invId;
   }
-  const activity = (userId, icon, text) => db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, icon, text, stamp());
-  const setOrder = (id, patch) => {
+  const activity = async (userId, icon, text) => (await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, icon, text, stamp()));
+  const setOrder = async (id, patch) => {
     const keys = Object.keys(patch);
-    db.run(`UPDATE orders SET ${keys.map((k) => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => (k === 'payload' ? JSON.stringify(patch[k]) : patch[k])), new Date().toISOString(), id);
+    await db.run(`UPDATE orders SET ${keys.map((k) => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => (k === 'payload' ? JSON.stringify(patch[k]) : patch[k])), new Date().toISOString(), id);
   };
   const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash' }[m] || m);
 
@@ -57,8 +58,8 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const kind = body.kind;
     if (!['domain', 'subscription', 'renewal'].includes(kind)) throw new HttpError(400, 'Type d’achat non pris en charge.', 'unsupported_kind');
     if (idempotencyKey) {
-      const prev = db.get('SELECT order_id FROM idempotency WHERE user_id = ? AND key = ?', user.id, idempotencyKey);
-      if (prev) return summarize(parse(db.get('SELECT * FROM orders WHERE id = ?', prev.order_id)));
+      const prev = await db.get('SELECT order_id FROM idempotency WHERE user_id = ? AND key = ?', user.id, idempotencyKey);
+      if (prev) return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', prev.order_id)));
     }
     let amount, payload, dryRun = false;
     if (kind === 'domain') {
@@ -66,14 +67,14 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       const names = body.domains || (body.domain ? [body.domain] : []);
       const q = await catalog.quote(names, years);
       for (const l of q.lines) {
-        if (db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", l.name)) throw new HttpError(409, 'Un de ces domaines est déjà enregistré.', 'domain_taken');
-        if (db.get(`SELECT 1 FROM orders WHERE kind = 'domain' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?`, `%"name":"${l.name}"%`)) throw new HttpError(409, 'Un de ces domaines est déjà en cours d’achat.', 'domain_taken');
+        if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", l.name))) throw new HttpError(409, 'Un de ces domaines est déjà enregistré.', 'domain_taken');
+        if ((await db.get(`SELECT 1 FROM orders WHERE kind = 'domain' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?`, `%"name":"${l.name}"%`))) throw new HttpError(409, 'Un de ces domaines est déjà en cours d’achat.', 'domain_taken');
       }
       amount = q.amount; payload = { lines: q.lines, years }; dryRun = cfg.namesilo.dryRun;
     } else if (kind === 'subscription') {
       amount = planAmount(body.plan, body.cycle);
       const domain = body.domain ? String(body.domain).toLowerCase() : '';
-      if (domain && !db.get('SELECT 1 FROM domains WHERE user_id = ? AND name = ?', user.id, domain)) throw new HttpError(400, 'Ce domaine n’est pas dans votre espace.', 'invalid_domain');
+      if (domain && !(await db.get('SELECT 1 FROM domains WHERE user_id = ? AND name = ?', user.id, domain))) throw new HttpError(400, 'Ce domaine n’est pas dans votre espace.', 'invalid_domain');
       const m = body.mailbox || {};
       // le mot de passe choisi est validé AVANT tout paiement, puis conservé CHIFFRÉ le temps de la commande (jamais en clair, supprimé après exécution)
       const mbPw = m.local && m.password ? mail.validatePassword(m.password, String(m.local).toLowerCase()) : null;
@@ -81,44 +82,44 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     } else {
       const years = Number(body.years || 1);
       if (!Number.isInteger(years) || years < 1 || years > cfg.maxYears) throw new HttpError(400, 'Durée invalide.', 'invalid_years');
-      const d = db.get("SELECT * FROM domains WHERE user_id = ? AND name = ? AND status = 'active' AND external = 0", user.id, String(body.domain || '').toLowerCase());
+      const d = await db.get("SELECT * FROM domains WHERE user_id = ? AND name = ? AND status = 'active' AND external = 0", user.id, String(body.domain || '').toLowerCase());
       if (!d) throw new HttpError(404, 'Domaine introuvable ou non renouvelable ici.', 'not_found');
-      if (db.get(`SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?`, `%"domain":"${d.name}"%`) && !system) throw new HttpError(409, 'Un renouvellement est déjà en attente de paiement pour ce domaine.', 'duplicate');
+      if ((await db.get(`SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?`, `%"domain":"${d.name}"%`)) && !system) throw new HttpError(409, 'Un renouvellement est déjà en attente de paiement pour ce domaine.', 'duplicate');
       const q = await catalog.renewalQuote(d.name, years);
       amount = q.amount; payload = { domain: d.name, years, line: q.line }; dryRun = cfg.namesilo.dryRun;
     }
 
     let method = body.method;
     let methodRow = null;
-    if (body.methodId) { methodRow = db.get('SELECT id, type, stripe_pm FROM payment_methods WHERE id = ? AND user_id = ?', String(body.methodId), user.id); if (methodRow && !method) method = methodRow.type; }
+    if (body.methodId) { methodRow = await db.get('SELECT id, type, stripe_pm FROM payment_methods WHERE id = ? AND user_id = ?', String(body.methodId), user.id); if (methodRow && !method) method = methodRow.type; }
     if (!(methodRow && methodRow.type === 'card' && methodRow.stripe_pm && method === 'card')) methodRow = null;
     method = method || 'all';
 
     const oid = 'ord_' + crypto.randomBytes(8).toString('hex');
     const reference = 'FP-' + crypto.randomBytes(5).toString('hex').toUpperCase();
     const ts = new Date().toISOString();
-    db.tx(() => {
-      db.run(`INSERT INTO orders (id, user_id, reference, kind, status, amount, currency, payload, payment_method, dry_run, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    await db.tx(async () => {
+      await db.run(`INSERT INTO orders (id, user_id, reference, kind, status, amount, currency, payload, payment_method, dry_run, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
         oid, user.id, reference, kind, 'awaiting_payment', amount, 'USD', JSON.stringify(payload), method, dryRun ? 1 : 0, ts, ts);
-      if (idempotencyKey) db.run('INSERT INTO idempotency (user_id, key, order_id) VALUES (?,?,?)', user.id, idempotencyKey, oid);
+      if (idempotencyKey) await db.run('INSERT INTO idempotency (user_id, key, order_id) VALUES (?,?,?)', user.id, idempotencyKey, oid);
     });
 
     let charge;
     const label = { domain: 'Freda Workspace — nom de domaine', subscription: 'Freda Workspace — offre Freda Mail', renewal: 'Freda Workspace — renouvellement de domaine' }[kind];
     try { charge = await payments.create({ amount, currency: 'USD', method, reference, userId: user.id, orderId: oid, methodId: methodRow ? methodRow.id : null, system, label }); }
     catch (e) {
-      setOrder(oid, { status: 'payment_failed', error: e.message });
+      await setOrder(oid, { status: 'payment_failed', error: e.message });
       if (e instanceof HttpError) throw e;
       throw new HttpError(e instanceof PaymentError ? e.status : 502, e instanceof PaymentError ? e.message : 'Le paiement a échoué.', 'payment_failed');
     }
-    setOrder(oid, { charge_id: charge.providerRef || '', redirect_url: charge.redirectUrl || '', payload: { ...payload, amountHtg: charge.amountHtg, amountCents: charge.amountCents } });
+    await setOrder(oid, { charge_id: charge.providerRef || '', redirect_url: charge.redirectUrl || '', payload: { ...payload, amountHtg: charge.amountHtg, amountCents: charge.amountCents } });
     if (charge.status === 'paid') {
       const res = await fulfill(oid);
       if (res.orderStatus === 'refunded') throw new HttpError(502, 'L’enregistrement a échoué. Votre paiement est remboursé.', 'registration_failed');
       if (res.orderStatus === 'needs_attention') throw new HttpError(502, 'Un problème est survenu. Notre équipe a été alertée et vous contacte rapidement.', 'needs_attention');
       return res;
     }
-    return summarize(parse(db.get('SELECT * FROM orders WHERE id = ?', oid)));
+    return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', oid)));
   }
 
   /* ---------- Confirmation du paiement ---------- */
@@ -126,32 +127,32 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     let v;
     try { v = await payments.verify({ reference: o.reference, order: o }); }
     catch (e) { log('warn', 'verify_failed', { reference: o.reference }); v = null; }
-    setOrder(o.id, { last_check: Date.now() });
+    await setOrder(o.id, { last_check: Date.now() });
     if (v && v.status === 'paid') {
       const p = parse(o).payload;
-      if (p.amountHtg && v.amountHtg && v.amountHtg < p.amountHtg * 0.99) { alert('error', 'Montant Pay\'m inférieur à la commande', { reference: o.reference, expectedHtg: p.amountHtg, paidHtg: v.amountHtg }); setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
-      if (p.amountCents && v.amountCents && v.amountCents < p.amountCents) { alert('error', 'Montant carte inférieur à la commande', { reference: o.reference, expectedCents: p.amountCents, paidCents: v.amountCents }); setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+      if (p.amountHtg && v.amountHtg && v.amountHtg < p.amountHtg * 0.99) { await alert('error', 'Montant Pay\'m inférieur à la commande', { reference: o.reference, expectedHtg: p.amountHtg, paidHtg: v.amountHtg }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+      if (p.amountCents && v.amountCents && v.amountCents < p.amountCents) { await alert('error', 'Montant carte inférieur à la commande', { reference: o.reference, expectedCents: p.amountCents, paidCents: v.amountCents }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
       await fulfill(o.id);
-      return db.get('SELECT * FROM orders WHERE id = ?', o.id);
+      return await db.get('SELECT * FROM orders WHERE id = ?', o.id);
     }
     // l'expiration n'est prononcée qu'APRÈS une vérification : un paiement tardif n'est jamais perdu
-    if (v && v.status === 'failed') { setOrder(o.id, { status: 'payment_failed', error: 'Le paiement n’a pas abouti.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
-    if (Date.now() - new Date(o.created_at).getTime() > EXPIRE_MS) { setOrder(o.id, { status: 'expired', error: 'Paiement non reçu à temps.' }); return db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+    if (v && v.status === 'failed') { await setOrder(o.id, { status: 'payment_failed', error: 'Le paiement n’a pas abouti.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+    if (Date.now() - new Date(o.created_at).getTime() > EXPIRE_MS) { await setOrder(o.id, { status: 'expired', error: 'Paiement non reçu à temps.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
     return o;
   }
 
   /** Confirmation déclenchée par un webhook : on ne fait JAMAIS confiance au contenu de l'événement, on revérifie chez le fournisseur. */
   async function confirmByReference(reference) {
-    let o = db.get('SELECT * FROM orders WHERE reference = ?', String(reference || ''));
+    let o = await db.get('SELECT * FROM orders WHERE reference = ?', String(reference || ''));
     if (!o) return { found: false };
-    if (o.status === 'expired') { setOrder(o.id, { status: 'awaiting_payment', error: '' }); o = db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+    if (o.status === 'expired') { await setOrder(o.id, { status: 'awaiting_payment', error: '' }); o = await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
     if (o.status !== 'awaiting_payment') return { found: true, status: o.status };
     o = await checkPayment(o);
     return { found: true, status: o.status };
   }
 
   async function status(userId, orderId) {
-    let o = db.get('SELECT * FROM orders WHERE id = ? AND user_id = ?', String(orderId), userId);
+    let o = await db.get('SELECT * FROM orders WHERE id = ? AND user_id = ?', String(orderId), userId);
     if (!o) throw new HttpError(404, 'Commande introuvable.', 'not_found');
     if (o.status === 'awaiting_payment' && Date.now() - o.last_check > 3000) o = await checkPayment(o);
     return summarize(parse(o));
@@ -160,19 +161,19 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   /** Balayage : confirme (ou fait expirer) les commandes en attente, même si le client a fermé la page. */
   async function sweep() {
     let n = 0;
-    for (const r of db.all("SELECT id, payload FROM orders WHERE status NOT IN ('awaiting_payment','fulfilling') AND payload LIKE '%passwordEnc%'")) {
-      const p = JSON.parse(r.payload); if (p.mailbox) delete p.mailbox.passwordEnc; setOrder(r.id, { payload: p });   // aucun mot de passe (même chiffré) ne survit à une commande terminée
+    for (const r of await db.all("SELECT id, payload FROM orders WHERE status NOT IN ('awaiting_payment','fulfilling') AND payload LIKE '%passwordEnc%'")) {
+      const p = JSON.parse(r.payload); if (p.mailbox) delete p.mailbox.passwordEnc; await setOrder(r.id, { payload: p });   // aucun mot de passe (même chiffré) ne survit à une commande terminée
     }
-    for (const o of db.all("SELECT * FROM orders WHERE status = 'awaiting_payment' ORDER BY created_at LIMIT 100")) { await checkPayment(o); n++; }
+    for (const o of await db.all("SELECT * FROM orders WHERE status = 'awaiting_payment' ORDER BY created_at LIMIT 100")) { await checkPayment(o); n++; }
     return { checked: n };
   }
 
   /* ---------- Exécution ---------- */
   async function fulfill(orderId) {
-    const claimed = db.run("UPDATE orders SET status = 'fulfilling', updated_at = ? WHERE id = ? AND status IN ('awaiting_payment','paid')", new Date().toISOString(), orderId);
-    if (!claimed.changes) return summarize(parse(db.get('SELECT * FROM orders WHERE id = ?', orderId)));   // déjà pris en charge
-    const o = parse(db.get('SELECT * FROM orders WHERE id = ?', orderId));
-    const user = db.get('SELECT * FROM users WHERE id = ?', o.user_id);
+    const claimed = await db.run("UPDATE orders SET status = 'fulfilling', updated_at = ? WHERE id = ? AND status IN ('awaiting_payment','paid')", new Date().toISOString(), orderId);
+    if (!claimed.changes) return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', orderId)));   // déjà pris en charge
+    const o = parse(await db.get('SELECT * FROM orders WHERE id = ?', orderId));
+    const user = await db.get('SELECT * FROM users WHERE id = ?', o.user_id);
     let extra = {};
     try {
       if (o.kind === 'domain') await fulfillDomain(o, user);
@@ -180,17 +181,17 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       else await fulfillRenewal(o, user);
     } catch (e) {
       log('error', 'fulfill_crashed', { orderId, name: e.name, message: e.message });
-      setOrder(orderId, { status: 'needs_attention', error: 'Erreur interne pendant l’exécution.' });
-      alert('error', 'Commande payée mais non exécutée : à traiter à la main', { orderId, reference: o.reference, kind: o.kind });
+      await setOrder(orderId, { status: 'needs_attention', error: 'Erreur interne pendant l’exécution.' });
+      await alert('error', 'Commande payée mais non exécutée : à traiter à la main', { orderId, reference: o.reference, kind: o.kind });
     }
-    return summarize(parse(db.get('SELECT * FROM orders WHERE id = ?', orderId)), extra);
+    return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', orderId)), extra);
   }
 
   async function refund(o, amount, reason) {
     try { await payments.refund({ reference: o.reference, amount, order: o, reason }); return true; }
     catch (e) {
       if (!(e instanceof RefundNotSupported)) log('error', 'refund_failed', { reference: o.reference });
-      alert('error', 'Remboursement à effectuer MANUELLEMENT', { reference: o.reference, amount, reason, method: o.payment_method });
+      await alert('error', 'Remboursement à effectuer MANUELLEMENT', { reference: o.reference, amount, reason, method: o.payment_method });
       return false;
     }
   }
@@ -203,15 +204,15 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
         const reg = await registrar.register({ domain: l.name, years, privacy: true, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
         if (reg.contactFallback) log('warn', 'contact_fallback', { domain: l.name });
         if (reg.nameserversFallback) log('warn', 'nameservers_fallback', { domain: l.name });
-        if (reg.orderAmount !== null && reg.orderAmount > l.cost * 1.1 + 0.5) alert('warn', 'Coût NameSilo supérieur au devis', { domain: l.name, expected: l.cost, charged: reg.orderAmount });
+        if (reg.orderAmount !== null && reg.orderAmount > l.cost * 1.1 + 0.5) await alert('warn', 'Coût NameSilo supérieur au devis', { domain: l.name, expected: l.cost, charged: reg.orderAmount });
         try { await registrar.lock(l.name); } catch (e) { log('warn', 'lock_failed', { domain: l.name }); }
         const exp = new Date(); exp.setFullYear(exp.getFullYear() + years);
-        const first = !db.get('SELECT 1 FROM domains WHERE user_id = ?', o.user_id);
+        const first = !(await db.get('SELECT 1 FROM domains WHERE user_id = ?', o.user_id));
         // auto_renew = rappels et facture de renouvellement envoyés automatiquement par Freda ; NameSilo reste en auto_renew=0
-        db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, expires_at, auto_renew, locked, is_primary, dry_run, registrar_cost, order_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        await db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, expires_at, auto_renew, locked, is_primary, dry_run, registrar_cost, order_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
           'dom_' + crypto.randomBytes(8).toString('hex'), o.user_id, l.name, 'active', 0, 'registrar', today(), exp.toISOString().slice(0, 10), 1, 1, first ? 1 : 0, o.dry_run, reg.orderAmount, o.id, new Date().toISOString());
-        activity(o.user_id, 'globe', `Domaine ${l.name} enregistré`);
-        if (db.get("SELECT 1 FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due')", o.user_id)) await dns.autofix(o.user_id, l.name, { quiet: true }).catch(() => log('warn', 'autofix_failed', { domain: l.name }));
+        await activity(o.user_id, 'globe', `Domaine ${l.name} enregistré`);
+        if ((await db.get("SELECT 1 FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due')", o.user_id))) await dns.autofix(o.user_id, l.name, { quiet: true }).catch(() => log('warn', 'autofix_failed', { domain: l.name }));
         done.push(l);
       } catch (e) {
         log('error', 'register_failed', { domain: l.name, code: e.code, detail: e.detail || e.message });
@@ -225,8 +226,8 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       status = ok ? (done.length ? 'partially_refunded' : 'refunded') : 'needs_attention';
     }
     const paid = r2(o.amount - (status === 'partially_refunded' || status === 'refunded' ? failedAmount : 0));
-    if (done.length && status !== 'needs_attention') addInvoice(o.user_id, { label: `${done.length > 1 ? 'Domaines ' : 'Domaine '}${done.map((l) => l.name).join(', ')} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: paid, method: methodLabel(o.payment_method), orderId: o.id });
-    setOrder(o.id, { status, payload: { ...o.payload, done: done.map((l) => l.name), failed: failed.map((f) => ({ name: f.name, reason: f.reason })) }, error: status === 'refunded' ? 'Enregistrement impossible.' : '' });
+    if (done.length && status !== 'needs_attention') await addInvoice(o.user_id, { label: `${done.length > 1 ? 'Domaines ' : 'Domaine '}${done.map((l) => l.name).join(', ')} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: paid, method: methodLabel(o.payment_method), orderId: o.id });
+    await setOrder(o.id, { status, payload: { ...o.payload, done: done.map((l) => l.name), failed: failed.map((f) => ({ name: f.name, reason: f.reason })) }, error: status === 'refunded' ? 'Enregistrement impossible.' : '' });
     if (done.length) {
       mailer.trySend({ to: user.email, ...templates.receipt(user, { ...o, amount: paid }, cfg.appUrl) });
       mailer.trySend({ to: user.email, ...templates.domainRegistered(user, done.map((l) => l.name), cfg.appUrl) });
@@ -236,20 +237,20 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   async function fulfillSubscription(o, user) {
     const p = o.payload;
     const plan = cfg.plans[p.plan];
-    const existing = db.get('SELECT * FROM subscriptions WHERE user_id = ?', o.user_id);
+    const existing = await db.get('SELECT * FROM subscriptions WHERE user_id = ?', o.user_id);
     const start = existing && existing.status !== 'cancelled' && existing.renews_at > today() && existing.plan === p.plan ? new Date(existing.renews_at) : new Date();
     const renews = new Date(start);
     if (p.cycle === 'yearly') renews.setFullYear(renews.getFullYear() + 1); else renews.setMonth(renews.getMonth() + 1);
-    db.tx(() => {
-      db.run(`INSERT INTO subscriptions (user_id, plan, cycle, status, renews_at, started_at) VALUES (?,?,?,?,?,?)
+    await db.tx(async () => {
+      await db.run(`INSERT INTO subscriptions (user_id, plan, cycle, status, renews_at, started_at) VALUES (?,?,?,?,?,?)
               ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, cycle = excluded.cycle, status = 'active', renews_at = excluded.renews_at, notices = 0, cancel_at_period_end = 0`,
         o.user_id, p.plan, p.cycle, 'active', renews.toISOString().slice(0, 10), today());
-      addInvoice(o.user_id, { label: `${plan.name} — ${p.cycle === 'yearly' ? 'annuel' : 'mensuel'}`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
-      activity(o.user_id, 'mail-plus', `Offre ${plan.name} ${p.renewal ? 'renouvelée' : 'activée'}`);
+      await addInvoice(o.user_id, { label: `${plan.name} — ${p.cycle === 'yearly' ? 'annuel' : 'mensuel'}`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
+      await activity(o.user_id, 'mail-plus', `Offre ${plan.name} ${p.renewal ? 'renouvelée' : 'activée'}`);
     });
     const back = await mail.reactivateMailboxes(o.user_id);      // offre payée à nouveau : les boîtes suspendues rouvrent
     if (back.mailboxes.length) mailer.trySend({ to: user.email, ...templates.mailboxesReactivated(user, back.mailboxes, cfg.appUrl + '/connexion.html') });
-    if (back.failed) alert('warn', 'Boîtes non réactivées (à retenter)', { userId: o.user_id, failed: back.failed });
+    if (back.failed) await alert('warn', 'Boîtes non réactivées (à retenter)', { userId: o.user_id, failed: back.failed });
     let initialPassword = null, mailboxReady = false;
     if (p.domain && !p.renewal) {
       await dns.autofix(o.user_id, p.domain, { quiet: true }).catch(() => log('warn', 'autofix_failed', { domain: p.domain }));
@@ -263,7 +264,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       }
     }
     const clean = { ...p, mailbox: p.mailbox ? { local: p.mailbox.local, name: p.mailbox.name } : null };   // le mot de passe chiffré est supprimé dès que la boîte existe
-    setOrder(o.id, { status: 'completed', payload: { ...clean, mailboxCreated: mailboxReady } });
+    await setOrder(o.id, { status: 'completed', payload: { ...clean, mailboxCreated: mailboxReady } });
     mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
     if (mailboxReady) mailer.trySend({ to: user.email, subject: 'Votre première boîte mail', text: initialPassword
       ? `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nMot de passe initial : ${initialPassword}\nChangez-le dès la première connexion.`
@@ -275,22 +276,22 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const { domain, years } = o.payload;
     try {
       const r = await registrar.renew({ domain, years });
-      if (r.orderAmount !== null && r.orderAmount > o.payload.line.cost * 1.1 + 0.5) alert('warn', 'Coût de renouvellement supérieur au devis', { domain, expected: o.payload.line.cost, charged: r.orderAmount });
+      if (r.orderAmount !== null && r.orderAmount > o.payload.line.cost * 1.1 + 0.5) await alert('warn', 'Coût de renouvellement supérieur au devis', { domain, expected: o.payload.line.cost, charged: r.orderAmount });
     } catch (e) {
-      setOrder(o.id, { status: 'needs_attention', error: 'Renouvellement NameSilo échoué : ' + (e.detail || e.message) });
-      alert('error', 'Renouvellement payé mais échoué chez NameSilo', { domain, reference: o.reference });
+      await setOrder(o.id, { status: 'needs_attention', error: 'Renouvellement NameSilo échoué : ' + (e.detail || e.message) });
+      await alert('error', 'Renouvellement payé mais échoué chez NameSilo', { domain, reference: o.reference });
       mailer.trySend({ to: user.email, ...templates.renewalFailed(user, domain) });
       return;
     }
-    const d = db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', o.user_id, domain);
+    const d = await db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', o.user_id, domain);
     const base = d.expires_at && d.expires_at > today() ? new Date(d.expires_at) : new Date();
     base.setFullYear(base.getFullYear() + years);
-    db.tx(() => {
-      db.run("UPDATE domains SET expires_at = ?, renewal_notices = 0, status = 'active' WHERE id = ?", base.toISOString().slice(0, 10), d.id);
-      addInvoice(o.user_id, { label: `Renouvellement ${domain} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
-      activity(o.user_id, 'refresh-cw', `Domaine ${domain} renouvelé jusqu'au ${base.toISOString().slice(0, 10)}`);
+    await db.tx(async () => {
+      await db.run("UPDATE domains SET expires_at = ?, renewal_notices = 0, status = 'active' WHERE id = ?", base.toISOString().slice(0, 10), d.id);
+      await addInvoice(o.user_id, { label: `Renouvellement ${domain} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
+      await activity(o.user_id, 'refresh-cw', `Domaine ${domain} renouvelé jusqu'au ${base.toISOString().slice(0, 10)}`);
     });
-    setOrder(o.id, { status: 'completed' });
+    await setOrder(o.id, { status: 'completed' });
     mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
   }
 

@@ -23,35 +23,35 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
     const left = daysLeft(d.expires_at, now);
     const attempt = DOMAIN_RETRY_AT_DAYS_LEFT.filter((x) => left <= x).length;
     if (!attempt) return false;
-    const card = db.get("SELECT id FROM payment_methods WHERE user_id = ? AND type = 'card' AND stripe_pm <> '' ORDER BY is_default DESC, created_at LIMIT 1", d.user_id);
+    const card = await db.get("SELECT id FROM payment_methods WHERE user_id = ? AND type = 'card' AND stripe_pm <> '' ORDER BY is_default DESC, created_at LIMIT 1", d.user_id);
     if (!card) return false;
-    if (db.get("SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?", `%"domain":"${d.name}"%`)) return false;   // un paiement manuel est déjà en cours
+    if ((await db.get("SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?", `%"domain":"${d.name}"%`))) return false;   // un paiement manuel est déjà en cours
     const key = `autorenew-dom-${d.id}-${d.expires_at}-${attempt}`;
-    if (db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', d.user_id, key)) return false;
-    const user = db.get('SELECT * FROM users WHERE id = ?', d.user_id);
+    if ((await db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', d.user_id, key))) return false;
+    const user = await db.get('SELECT * FROM users WHERE id = ?', d.user_id);
     try {
       const o = await orders.create({ user, system: true, idempotencyKey: key, body: { kind: 'renewal', domain: d.name, years: 1, method: 'card', methodId: card.id } });
       log('info', 'autorenew_domain', { domain: d.name, attempt, status: o.status });
     } catch (e) { log('warn', 'autorenew_domain_failed', { domain: d.name, attempt, message: e.message }); }
-    const after = db.get('SELECT expires_at FROM domains WHERE id = ?', d.id);
+    const after = await db.get('SELECT expires_at FROM domains WHERE id = ?', d.id);
     return !!after && after.expires_at !== d.expires_at;
   }
 
   async function domainReminders(now) {
     let sent = 0;
-    const rows = db.all("SELECT d.*, u.email, u.name AS uname FROM domains d JOIN users u ON u.id = d.user_id WHERE d.external = 0 AND d.dry_run = 0 AND d.status IN ('active','expired') AND d.expires_at <> ''");
+    const rows = await db.all("SELECT d.*, u.email, u.name AS uname FROM domains d JOIN users u ON u.id = d.user_id WHERE d.external = 0 AND d.dry_run = 0 AND d.status IN ('active','expired') AND d.expires_at <> ''");
     for (const d of rows) {
       const left = daysLeft(d.expires_at, now);
       const user = { name: d.uname };
-      if (left < 0 && d.status === 'active') db.run("UPDATE domains SET status = 'expired' WHERE id = ?", d.id);
+      if (left < 0 && d.status === 'active') await db.run("UPDATE domains SET status = 'expired' WHERE id = ?", d.id);
       if (!d.auto_renew) continue;                       // le client a désactivé le renouvellement automatique et les rappels pour ce domaine
       if (await autoRenewDomain(d, now)) continue;       // renouvelé sur la carte enregistrée : aucun rappel
       const link = `${cfg.appUrl}/espace/domaines.html?renew=${encodeURIComponent(d.name)}`;
-      if (left <= 0 && !(d.renewal_notices & 16)) { await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, 0, link) }); db.run('UPDATE domains SET renewal_notices = renewal_notices | 16 WHERE id = ?', d.id); sent++; continue; }
+      if (left <= 0 && !(d.renewal_notices & 16)) { await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, 0, link) }); await db.run('UPDATE domains SET renewal_notices = renewal_notices | 16 WHERE id = ?', d.id); sent++; continue; }
       const due = THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(d.renewal_notices & bit));
       if (!due.length) continue;
       await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, left, link) });
-      db.run('UPDATE domains SET renewal_notices = renewal_notices | ? WHERE id = ?', due.reduce((m, [, bit]) => m | bit, 0), d.id);
+      await db.run('UPDATE domains SET renewal_notices = renewal_notices | ? WHERE id = ?', due.reduce((m, [, bit]) => m | bit, 0), d.id);
       sent++;
     }
     return sent;
@@ -66,28 +66,28 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
     const left = daysLeft(s.renews_at, now);
     const attempt = RETRY_AT_DAYS_LEFT.filter((d) => left <= d).length;     // 0 = pas encore échu
     if (!attempt) return false;
-    const card = db.get("SELECT id FROM payment_methods WHERE user_id = ? AND type = 'card' AND stripe_pm <> '' ORDER BY is_default DESC, created_at LIMIT 1", s.user_id);
+    const card = await db.get("SELECT id FROM payment_methods WHERE user_id = ? AND type = 'card' AND stripe_pm <> '' ORDER BY is_default DESC, created_at LIMIT 1", s.user_id);
     if (!card) return false;
     const key = `autorenew-${s.user_id}-${s.renews_at}-${attempt}`;
-    if (db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', s.user_id, key)) return false;   // déjà tentée
-    const user = db.get('SELECT * FROM users WHERE id = ?', s.user_id);
+    if ((await db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', s.user_id, key))) return false;   // déjà tentée
+    const user = await db.get('SELECT * FROM users WHERE id = ?', s.user_id);
     try {
       const o = await orders.create({ user, system: true, idempotencyKey: key, body: { kind: 'subscription', plan: s.plan, cycle: s.cycle, renewal: true, method: 'card', methodId: card.id } });
       log('info', 'autorenew', { userId: s.user_id, attempt, status: o.status });
     } catch (e) { log('warn', 'autorenew_failed', { userId: s.user_id, attempt, message: e.message }); }
-    const after = db.get('SELECT renews_at FROM subscriptions WHERE user_id = ?', s.user_id);
+    const after = await db.get('SELECT renews_at FROM subscriptions WHERE user_id = ?', s.user_id);
     return !!after && after.renews_at !== s.renews_at;
   }
 
   async function subscriptionDue(now) {
     let sent = 0;
-    const rows = db.all("SELECT s.*, u.email, u.name AS uname FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE s.status IN ('active','past_due')");
+    const rows = await db.all("SELECT s.*, u.email, u.name AS uname FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE s.status IN ('active','past_due')");
     for (const s of rows) {
       const left = daysLeft(s.renews_at, now);
       const plan0 = cfg.plans[s.plan].name;
       if (s.cancel_at_period_end) {                       // résiliée : jamais de prélèvement ni de rappel ; à la fin de la période payée -> « cancelled » (boîtes suspendues plus bas)
         if (left < 0) {
-          db.run("UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ?", s.user_id);
+          await db.run("UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ?", s.user_id);
           await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended({ name: s.uname }, plan0, `${cfg.appUrl}/espace/facturation.html`) });
           log('info', 'subscription_cancelled_ended', { userId: s.user_id });
         }
@@ -97,17 +97,17 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
       const user = { name: s.uname };
       const link = `${cfg.appUrl}/espace/facturation.html?renew=1`;
       const plan = cfg.plans[s.plan].name;
-      if (left < 0 && s.status === 'active') db.run("UPDATE subscriptions SET status = 'past_due' WHERE user_id = ?", s.user_id);
+      if (left < 0 && s.status === 'active') await db.run("UPDATE subscriptions SET status = 'past_due' WHERE user_id = ?", s.user_id);
       if (left < -7 && s.status !== 'suspended') {
-        db.run("UPDATE subscriptions SET status = 'suspended' WHERE user_id = ?", s.user_id);
+        await db.run("UPDATE subscriptions SET status = 'suspended' WHERE user_id = ?", s.user_id);
         await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended(user, plan, link) });
         log('warn', 'subscription_suspended', { userId: s.user_id }); continue;
       }
-      if (left <= 0 && !(s.notices & 4)) { await mailer.trySend({ to: s.email, ...templates.subscriptionDue(user, plan, 0, link) }); db.run('UPDATE subscriptions SET notices = notices | 4 WHERE user_id = ?', s.user_id); sent++; continue; }
+      if (left <= 0 && !(s.notices & 4)) { await mailer.trySend({ to: s.email, ...templates.subscriptionDue(user, plan, 0, link) }); await db.run('UPDATE subscriptions SET notices = notices | 4 WHERE user_id = ?', s.user_id); sent++; continue; }
       const due = SUB_THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(s.notices & bit));
       if (!due.length) continue;
       await mailer.trySend({ to: s.email, ...templates.subscriptionDue(user, plan, left, link) });
-      db.run('UPDATE subscriptions SET notices = notices | ? WHERE user_id = ?', due.reduce((m, [, bit]) => m | bit, 0), s.user_id);
+      await db.run('UPDATE subscriptions SET notices = notices | ? WHERE user_id = ?', due.reduce((m, [, bit]) => m | bit, 0), s.user_id);
       sent++;
     }
     return sent;
@@ -116,10 +116,10 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
   /** Applique réellement les suspensions : toute offre « suspended » / « cancelled » dont des boîtes sont encore ouvertes (y compris après un échec précédent). */
   async function enforceSuspensions() {
     let n = 0;
-    for (const r of db.all("SELECT DISTINCT s.user_id FROM subscriptions s JOIN mailboxes m ON m.user_id = s.user_id WHERE s.status IN ('suspended','cancelled') AND m.provider_status = 'active'")) {
+    for (const r of await db.all("SELECT DISTINCT s.user_id FROM subscriptions s JOIN mailboxes m ON m.user_id = s.user_id WHERE s.status IN ('suspended','cancelled') AND m.provider_status = 'active'")) {
       const out = await mail.suspendMailboxes(r.user_id); n += out.suspended;
     }
-    for (const r of db.all("SELECT DISTINCT user_id FROM mailboxes WHERE rule_state IN ('pending','cleanup')")) await mail.reconcileRules(r.user_id);   // règles de routage à poser / retirer (échecs précédents)
+    for (const r of await db.all("SELECT DISTINCT user_id FROM mailboxes WHERE rule_state IN ('pending','cleanup')")) await mail.reconcileRules(r.user_id);   // règles de routage à poser / retirer (échecs précédents)
     return n;
   }
 
@@ -139,7 +139,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
     run,
     start() { if (timer) return; timer = setInterval(() => run().catch(() => {}), cfg.renewals.intervalMs); timer.unref(); },
     /** Balayage rapide des paiements Pay'm (toutes les minutes) : un client qui ferme l'onglet est quand même servi. */
-    startSweeper() { const t = setInterval(() => orders.sweep().catch(() => {}), 60 * 1000); t.unref(); return t; },
+    startSweeper() { const t = setInterval(async () => orders.sweep().catch(() => {}), 60 * 1000); t.unref(); return t; },
     stop() { if (timer) clearInterval(timer); timer = null; },
   };
 }

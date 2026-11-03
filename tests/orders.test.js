@@ -6,7 +6,7 @@ test.after(closeAll);
 const payBody = (b) => ({ kind: 'domain', years: 1, method: 'moncash', ...b });
 const checkout = (t, body, headers) => t.user('/api/checkout', { method: 'POST', body, headers });
 const order = async (t, id) => (await t.user('/api/orders/' + id)).json();
-const withPaym = () => setup({ env: { PAYMENTS_PROVIDER: 'paym' } });
+const withPaym = async () => (await setup({ env: { PAYMENTS_PROVIDER: 'paym' } }));
 
 test('Pay’m : la commande reste en attente avec l’URL de paiement ; montant HTG envoyé = prix serveur × taux (arrondi au-dessus)', async () => {
   const t = await withPaym();
@@ -19,7 +19,7 @@ test('Pay’m : la commande reste en attente avec l’URL de paiement ; montant 
   assert.strictEqual(call.montant, Math.ceil(12.99 * 132.5));
   assert.strictEqual(call.refference_id, r.reference);
   assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'), 'rien n’est acheté avant le paiement');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM domains').n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM domains')).n, 0);
 });
 
 test('Pay’m : tant que le client n’a pas payé, la commande reste « pending » ; une fois payée, elle s’exécute une seule fois', async () => {
@@ -27,14 +27,14 @@ test('Pay’m : tant que le client n’a pas payé, la commande reste « pending
   const r = await (await checkout(t, payBody({ domains: ['neuf.com'] }))).json();
   assert.strictEqual((await order(t, r.orderId)).status, 'pending');
   t.state.paid.add(r.reference);
-  t.db.run('UPDATE orders SET last_check = 0');
+  await t.db.run('UPDATE orders SET last_check = 0');
   const done = await order(t, r.orderId);
   assert.strictEqual(done.status, 'succeeded');
   assert.deepStrictEqual(done.domains, ['neuf.com']);
-  t.db.run('UPDATE orders SET last_check = 0');
+  await t.db.run('UPDATE orders SET last_check = 0');
   await order(t, r.orderId);
   assert.strictEqual(t.ns.calls.filter((c) => c.op === 'registerDomain').length, 1, 'jamais deux enregistrements');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM invoices').n, 1);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM invoices')).n, 1);
 });
 
 test('Pay’m : le balayage confirme le paiement même si le client a fermé la page', async () => {
@@ -43,20 +43,20 @@ test('Pay’m : le balayage confirme le paiement même si le client a fermé la 
   t.state.paid.add(r.reference);
   const s = await t.app.app.orders.sweep();
   assert.strictEqual(s.checked, 1);
-  assert.strictEqual(t.db.get('SELECT status FROM orders').status, 'completed');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM domains').n, 1);
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'completed');
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM domains')).n, 1);
 });
 
 test('Pay’m : commande expirée après 2 h sans paiement ; montant payé insuffisant -> needs_attention + alerte', async () => {
   const t = await withPaym();
   const a = await (await checkout(t, payBody({ domains: ['un.com'] }))).json();
-  t.db.run("UPDATE orders SET created_at = ? WHERE id = ?", new Date(Date.now() - 3 * 3600 * 1000).toISOString(), a.orderId);
+  await t.db.run("UPDATE orders SET created_at = ? WHERE id = ?", new Date(Date.now() - 3 * 3600 * 1000).toISOString(), a.orderId);
   await t.app.app.orders.sweep();
-  assert.strictEqual(t.db.get('SELECT status FROM orders WHERE id = ?', a.orderId).status, 'expired');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders WHERE id = ?', a.orderId)).status, 'expired');
   const b = await (await checkout(t, payBody({ domains: ['deux.com'] }))).json();
   t.state.paid.add(b.reference); t.state.paidAmount[b.reference] = 100;
   await t.app.app.orders.sweep();
-  assert.strictEqual(t.db.get('SELECT status FROM orders WHERE id = ?', b.orderId).status, 'needs_attention');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders WHERE id = ?', b.orderId)).status, 'needs_attention');
   assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'));
 });
 
@@ -67,16 +67,16 @@ test('Pay’m : échec d’enregistrement après paiement -> remboursement manue
   const r = await (await checkout(t, payBody({ domains: ['neuf.com'] }))).json();
   t.state.paid.add(r.reference);
   await t.app.app.orders.sweep();
-  assert.strictEqual(t.db.get('SELECT status FROM orders').status, 'needs_attention');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'needs_attention');
   assert.ok(alerts.some(([, m]) => /MANUELLEMENT/.test(m)));
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM invoices').n, 0, 'pas de facture pour un achat non livré');
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM invoices')).n, 0, 'pas de facture pour un achat non livré');
 });
 
 test('Pay’m indisponible -> 502 et commande marquée payment_failed ; carte -> 501', async () => {
   const t = await withPaym();
   t.state.paymDown = true;
   assert.strictEqual((await checkout(t, payBody({ domains: ['neuf.com'] }))).status, 502);
-  assert.strictEqual(t.db.get('SELECT status FROM orders').status, 'payment_failed');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'payment_failed');
   t.state.paymDown = false;
   assert.strictEqual((await checkout(t, payBody({ domains: ['autre.com'], method: 'card' }))).status, 501);
 });
@@ -125,7 +125,7 @@ test('offre : plan inconnu, cycle inconnu, domaine d’un autre compte refusés'
 test('renouvellement : prix de renouvellement serveur, NameSilo renewDomain, expiration prolongée, facture', async () => {
   const t = await withPaym();
   await buyDomain(t);
-  const before = t.db.get('SELECT expires_at FROM domains').expires_at;
+  const before = (await t.db.get('SELECT expires_at FROM domains')).expires_at;
   const r = await (await checkout(t, { kind: 'renewal', domain: 'neuf.com', years: 2, method: 'moncash' })).json();
   assert.strictEqual(r.amount, 15.99 * 2);
   assert.strictEqual((await checkout(t, { kind: 'renewal', domain: 'neuf.com', years: 1 })).status, 409, 'un seul renouvellement en attente');
@@ -133,9 +133,9 @@ test('renouvellement : prix de renouvellement serveur, NameSilo renewDomain, exp
   await t.app.app.orders.sweep();
   const q = t.ns.calls.find((c) => c.op === 'renewDomain').q;
   assert.deepStrictEqual([q.domain, q.years], ['neuf.com', '2']);
-  const after = t.db.get('SELECT expires_at FROM domains').expires_at;
+  const after = (await t.db.get('SELECT expires_at FROM domains')).expires_at;
   assert.strictEqual(Number(after.slice(0, 4)) - Number(before.slice(0, 4)), 2);
-  assert.ok(t.db.get("SELECT 1 FROM invoices WHERE label LIKE 'Renouvellement neuf.com%'"));
+  assert.ok(await t.db.get("SELECT 1 FROM invoices WHERE label LIKE 'Renouvellement neuf.com%'"));
 });
 
 test('renouvellement payé mais refusé par NameSilo -> needs_attention + e-mail client + alerte', async () => {
@@ -146,7 +146,7 @@ test('renouvellement payé mais refusé par NameSilo -> needs_attention + e-mail
   const r = await (await checkout(t, { kind: 'renewal', domain: 'neuf.com', years: 1, method: 'moncash' })).json();
   t.state.paid.add(r.reference);
   await t.app.app.orders.sweep();
-  assert.strictEqual(t.db.get('SELECT status FROM orders WHERE id = ?', r.orderId).status, 'needs_attention');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders WHERE id = ?', r.orderId)).status, 'needs_attention');
   assert.ok(alerts.some(([, m]) => /Renouvellement payé mais échoué/.test(m)));
   assert.ok(t.mailer.sent.some((m) => /n'a pas pu être renouvelé/.test(m.subject)));
 });
@@ -156,4 +156,19 @@ test('renouvellement : domaine inconnu ou externe refusé', async () => {
   assert.strictEqual((await checkout(t, { kind: 'renewal', domain: 'inconnu.com' })).status, 404);
   await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'externe.com', mode: 'records' } });
   assert.strictEqual((await checkout(t, { kind: 'renewal', domain: 'externe.com' })).status, 404);
+});
+
+test('numéros de facture : uniques même quand plusieurs paiements sont confirmés en même temps', async () => {
+  const t = await withPaym();
+  const refs = [];
+  for (const d of ['un.com', 'deux.com', 'trois.com', 'quatre.com', 'cinq.com']) {
+    const r = await (await checkout(t, payBody({ domains: [d] }))).json();
+    t.state.paid.add(r.reference); refs.push(r.orderId);
+  }
+  await t.db.run('UPDATE orders SET last_check = 0');
+  await Promise.all(refs.map((id) => t.user('/api/orders/' + id)));       // 5 confirmations parallèles
+  const ids = (await t.db.all('SELECT id FROM invoices ORDER BY id')).map((r) => r.id);
+  assert.strictEqual(ids.length, 5);
+  assert.strictEqual(new Set(ids).size, 5, 'aucun doublon : ' + ids.join(', '));
+  assert.match(ids[0], /^FW-\d{4}-0001$/);
 });

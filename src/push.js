@@ -69,8 +69,8 @@ function watchMailbox({ imap, user, pass, getLastUid, setLastUid, onNew, onDenie
     if (!sel.ok || uidnext === null) throw new Error('imap_select');
     let n = 2;
     const catchUp = async () => {
-      const last = getLastUid();
-      if (last === null) return setLastUid(uidnext - 1);                 // première connexion : on part de l'existant, sans notifier
+      const last = await getLastUid();
+      if (last === null) return await setLastUid(uidnext - 1);                 // première connexion : on part de l'existant, sans notifier
       if (uidnext - 1 <= last) return;
       const info = { count: uidnext - 1 - last };
       if (preview) {
@@ -81,7 +81,7 @@ function watchMailbox({ imap, user, pass, getLastUid, setLastUid, onNew, onDenie
           info.subject = decodeWords((/^Subject: (.*)$/mi.exec(text) || [])[1] || '');
         } catch (e) { /* aperçu facultatif */ }
       }
-      setLastUid(uidnext - 1);
+      await setLastUid(uidnext - 1);
       onNew(info);
     };
     await catchUp();
@@ -107,7 +107,7 @@ function watchMailbox({ imap, user, pass, getLastUid, setLastUid, onNew, onDenie
       catch (e) {
         try { conn && conn.close(); } catch (x) { /* déjà fermée */ }          // jamais de connexion orpheline (même quand l'identifiant est refusé)
         if (stopped) break;
-        if (e.denied) { log('warn', 'push_watch_denied', { user }); onDenied(); break; }
+        if (e.denied) { log('warn', 'push_watch_denied', { user }); await onDenied(); break; }
         if (Date.now() - startedAt > 60000) delay = 2000;                // une session longue a réussi : on repart de zéro
         log('warn', 'push_watch_retry', { message: e.message });
       }
@@ -133,12 +133,12 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
   async function locked(key, fn) { const prev = locks.get(key) || Promise.resolve(); const next = prev.then(fn, fn); locks.set(key, next.catch(() => {})); return next; }
 
   /** Un seul identifiant de surveillance par boîte : mot de passe d'application Purelymail « Freda push », chiffré. */
-  function ensureCredential(b) {
-    return locked('cred:' + b.id, async () => {
-      if (db.get('SELECT 1 FROM push_credentials WHERE mailbox_id = ?', b.id)) return;
+  async function ensureCredential(b) {
+    return await locked('cred:' + b.id, async () => {
+      if ((await db.get('SELECT 1 FROM push_credentials WHERE mailbox_id = ?', b.id))) return;
       const secret = await pm.createAppPassword({ local: providerLocal(b), domain: b.domain, name: 'Freda push' });
       if (!secret) throw new HttpError(502, 'Le serveur de messagerie n’a pas fourni d’identifiant de notification. Réessayez.', 'mail_provider_error');
-      db.run('INSERT INTO push_credentials (mailbox_id, secret_enc, created_at, last_uid) VALUES (?,?,?,NULL)', b.id, vault.encrypt(secret), new Date().toISOString());
+      await db.run('INSERT INTO push_credentials (mailbox_id, secret_enc, created_at, last_uid) VALUES (?,?,?,NULL)', b.id, vault.encrypt(secret), new Date().toISOString());
     });
   }
 
@@ -148,26 +148,26 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
     if (!tokenOk[platform].test(t)) throw new HttpError(400, 'Jeton de notification invalide.', 'invalid_token');
     if (!enabled(platform)) throw new HttpError(503, 'Les notifications ne sont pas disponibles pour le moment.', 'push_not_configured');
     if (!mail.providerEnabled) throw new HttpError(503, 'La messagerie est en cours d’activation.', 'mailbox_not_ready');
-    if (!db.get('SELECT 1 FROM push_devices WHERE mailbox_id = ? AND platform = ? AND token = ?', b.id, platform, t) && db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', b.id).n >= MAX_DEVICES) throw new HttpError(403, `Limite de ${MAX_DEVICES} appareils par boîte atteinte.`, 'device_limit');
+    if (!(await db.get('SELECT 1 FROM push_devices WHERE mailbox_id = ? AND platform = ? AND token = ?', b.id, platform, t)) && (await db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', b.id)).n >= MAX_DEVICES) throw new HttpError(403, `Limite de ${MAX_DEVICES} appareils par boîte atteinte.`, 'device_limit');
     try { await ensureCredential(b); }
     catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(502, 'Le serveur de messagerie n’a pas accepté la demande. Réessayez.', 'mail_provider_error'); }
-    db.tx(() => {
-      db.run('DELETE FROM push_devices WHERE platform = ? AND token = ? AND mailbox_id <> ?', platform, t, b.id);    // un téléphone ne notifie qu'UN compte à la fois
-      if (!db.get('SELECT 1 FROM push_devices WHERE mailbox_id = ? AND platform = ? AND token = ?', b.id, platform, t)) db.run('INSERT INTO push_devices (id, mailbox_id, platform, token, created_at) VALUES (?,?,?,?,?)', idOf(), b.id, platform, t, new Date().toISOString());
+    await db.tx(async () => {
+      await db.run('DELETE FROM push_devices WHERE platform = ? AND token = ? AND mailbox_id <> ?', platform, t, b.id);    // un téléphone ne notifie qu'UN compte à la fois
+      if (!(await db.get('SELECT 1 FROM push_devices WHERE mailbox_id = ? AND platform = ? AND token = ?', b.id, platform, t))) await db.run('INSERT INTO push_devices (id, mailbox_id, platform, token, created_at) VALUES (?,?,?,?,?)', idOf(), b.id, platform, t, new Date().toISOString());
     });
     await reconcile();
     return { registered: true };
   }
 
   async function unregister(b, token) {
-    db.run('DELETE FROM push_devices WHERE mailbox_id = ? AND token = ?', b.id, String(token || ''));
+    await db.run('DELETE FROM push_devices WHERE mailbox_id = ? AND token = ?', b.id, String(token || ''));
     await reconcile();
     return { registered: false };
   }
 
   async function dispatch(mailboxId) {
     const p = pending.get(mailboxId); pending.delete(mailboxId);
-    const b = db.get('SELECT * FROM mailboxes WHERE id = ?', mailboxId);
+    const b = await db.get('SELECT * FROM mailboxes WHERE id = ?', mailboxId);
     if (!p || !b) return;
     const single = p.count === 1 && cfg.push.preview && (p.from || p.subject);
     const msg = {
@@ -175,12 +175,12 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
       body: single ? (p.subject || '(sans objet)') : b.address,
       data: { kind: 'new_mail', mailbox: b.address, count: p.count }, collapseId: b.id,
     };
-    for (const d of db.all('SELECT * FROM push_devices WHERE mailbox_id = ?', mailboxId)) {
+    for (const d of await db.all('SELECT * FROM push_devices WHERE mailbox_id = ?', mailboxId)) {
       const sender = senders && senders[d.platform];
       if (!sender) continue;
       try {
         let r; try { r = await sender.send(d.token, msg); } catch (e) { await sleep(1500); r = await sender.send(d.token, msg); }   // une nouvelle tentative
-        if (r.invalid) { db.run('DELETE FROM push_devices WHERE id = ?', d.id); log('info', 'push_token_removed', { platform: d.platform }); }
+        if (r.invalid) { await db.run('DELETE FROM push_devices WHERE id = ?', d.id); log('info', 'push_token_removed', { platform: d.platform }); }
       } catch (e) { log('warn', 'push_send_failed', { platform: d.platform, message: e.message }); }
     }
   }
@@ -188,7 +188,7 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
   function notify(mailboxId, info) {
     const cur = pending.get(mailboxId) || { count: 0 };
     cur.count += info.count; cur.from = info.from; cur.subject = info.subject;      // regroupe les rafales : une notification par fenêtre
-    clearTimeout(cur.timer); cur.timer = setTimeout(() => dispatch(mailboxId).catch(() => {}), debounceMs); cur.timer.unref && cur.timer.unref();
+    clearTimeout(cur.timer); cur.timer = setTimeout(async () => dispatch(mailboxId).catch(() => {}), debounceMs); cur.timer.unref && cur.timer.unref();
     pending.set(mailboxId, cur);
   }
 
@@ -197,11 +197,11 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
     const pass = vault.decrypt(row.secret_enc);
     const w = watchMailbox({
       imap: cfg.imap, user, pass, preview: cfg.push.preview, log,
-      getLastUid: () => { const r = db.get('SELECT last_uid FROM push_credentials WHERE mailbox_id = ?', row.id); return r ? r.last_uid : null; },
-      setLastUid: (uid) => db.run('UPDATE push_credentials SET last_uid = ? WHERE mailbox_id = ?', uid, row.id),
+      getLastUid: async () => { const r = await db.get('SELECT last_uid FROM push_credentials WHERE mailbox_id = ?', row.id); return r ? r.last_uid : null; },
+      setLastUid: async (uid) => (await db.run('UPDATE push_credentials SET last_uid = ? WHERE mailbox_id = ?', uid, row.id)),
       onNew: (info) => notify(row.id, info),
-      onDenied: () => {                                  // identifiant révoqué / invalide : on l'oublie, la réconciliation en recrée un (au plus 1 fois / 10 min)
-        watchers.delete(row.id); db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', row.id);
+      onDenied: async () => {                                  // identifiant révoqué / invalide : on l'oublie, la réconciliation en recrée un (au plus 1 fois / 10 min)
+        watchers.delete(row.id); await db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', row.id);
       },
     });
     watchers.set(row.id, { w, user });
@@ -209,25 +209,25 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
   }
 
   /** Aligne les observateurs sur la base : boîtes actives avec appareil et identifiant ; crée les identifiants manquants ; supprime ceux devenus inutiles. */
-  function reconcile() {
-    return locked('reconcile', async () => {
-      const want = db.all(`SELECT m.*, c.secret_enc FROM mailboxes m JOIN push_credentials c ON c.mailbox_id = m.id
+  async function reconcile() {
+    return await locked('reconcile', async () => {
+      const want = await db.all(`SELECT m.*, c.secret_enc FROM mailboxes m JOIN push_credentials c ON c.mailbox_id = m.id
         WHERE m.provider_status = 'active' AND EXISTS (SELECT 1 FROM push_devices d WHERE d.mailbox_id = m.id)`);
       const wantIds = new Set(want.map((r) => r.id));
       for (const [mid, x] of watchers) if (!wantIds.has(mid)) { x.w.stop(); watchers.delete(mid); }
       for (const row of want) if (!watchers.has(row.id)) startWatcher(row);
       // identifiant à recréer (refusé précédemment) pour les boîtes actives qui ont toujours des appareils
-      for (const b of db.all(`SELECT m.* FROM mailboxes m WHERE m.provider_status = 'active' AND EXISTS (SELECT 1 FROM push_devices d WHERE d.mailbox_id = m.id)
+      for (const b of await db.all(`SELECT m.* FROM mailboxes m WHERE m.provider_status = 'active' AND EXISTS (SELECT 1 FROM push_devices d WHERE d.mailbox_id = m.id)
           AND NOT EXISTS (SELECT 1 FROM push_credentials c WHERE c.mailbox_id = m.id)`)) {
         if (Date.now() - (lastRecreate.get(b.id) || 0) < 10 * 60 * 1000) continue;
         lastRecreate.set(b.id, Date.now());
-        try { await ensureCredential(b); const row = db.get('SELECT m.*, c.secret_enc FROM mailboxes m JOIN push_credentials c ON c.mailbox_id = m.id WHERE m.id = ?', b.id); if (row && !watchers.has(row.id)) startWatcher(row); }
+        try { await ensureCredential(b); const row = await db.get('SELECT m.*, c.secret_enc FROM mailboxes m JOIN push_credentials c ON c.mailbox_id = m.id WHERE m.id = ?', b.id); if (row && !watchers.has(row.id)) startWatcher(row); }
         catch (e) { log('warn', 'push_credential_failed', { mailbox: b.address }); }
       }
       // plus aucun appareil : l'identifiant de surveillance est révoqué chez Purelymail puis supprimé (en cas d'échec, retenté au passage suivant)
-      for (const c of db.all(`SELECT c.*, m.local_part, m.provider_user, m.domain, m.provider_status FROM push_credentials c JOIN mailboxes m ON m.id = c.mailbox_id
+      for (const c of await db.all(`SELECT c.*, m.local_part, m.provider_user, m.domain, m.provider_status FROM push_credentials c JOIN mailboxes m ON m.id = c.mailbox_id
           WHERE NOT EXISTS (SELECT 1 FROM push_devices d WHERE d.mailbox_id = c.mailbox_id)`)) {
-        try { await pm.deleteAppPassword({ local: providerLocal(c), domain: c.domain, appPassword: vault.decrypt(c.secret_enc) }); db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', c.mailbox_id); }
+        try { await pm.deleteAppPassword({ local: providerLocal(c), domain: c.domain, appPassword: vault.decrypt(c.secret_enc) }); await db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', c.mailbox_id); }
         catch (e) { log('warn', 'push_credential_cleanup_failed', { mailbox: c.mailbox_id }); }
       }
     });
@@ -237,7 +237,7 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
   return {
     enabled, register, unregister, reconcile, notify,
     watchers: () => watchers,
-    async start() { await reconcile(); if (!timer) { timer = setInterval(() => reconcile().catch(() => {}), 60000); timer.unref(); } },
+    async start() { await reconcile(); if (!timer) { timer = setInterval(async () => reconcile().catch(() => {}), 60000); timer.unref(); } },
     stop() { clearInterval(timer); timer = null; for (const x of Object.values(senders || {})) { try { x && x.close && x.close(); } catch (e) { /* déjà fermé */ } } for (const x of watchers.values()) x.w.stop(); watchers.clear(); for (const p of pending.values()) clearTimeout(p.timer); pending.clear(); },
   };
 }

@@ -31,8 +31,8 @@ async function withPush(over = {}) {
   t.mb = (path, opts = {}, token = t.token) => t.api(path, { ...opts, headers: { Authorization: 'Bearer ' + token, ...(opts.headers || {}) } });
   t.reg = (body, token) => t.mb('/api/mail/push', { method: 'POST', body }, token);
   t.push = t.app.app.push;
-  t.boxId = (local = 'contact') => t.db.get('SELECT id FROM mailboxes WHERE local_part = ?', local).id;
-  t.ready = async (local = 'contact') => (await waitFor(() => t.push.watchers().get(t.boxId(local)))).w.ready;
+  t.boxId = async (local = 'contact') => (await t.db.get('SELECT id FROM mailboxes WHERE local_part = ?', local)).id;
+  t.ready = async (local = 'contact') => { const id = await t.boxId(local); return (await waitFor(() => t.push.watchers().get(id))).w.ready; };
   return t;
 }
 const U = 'contact@neuf.com';
@@ -61,9 +61,9 @@ test('enregistrement : plateforme et jeton validés ; plateforme non configurée
   const create = t.pm.calls.filter((c) => c.path.endsWith('/createAppPassword'));
   assert.strictEqual(create.length, 1, 'un seul identifiant de surveillance');
   assert.deepStrictEqual(create[0].body, { userHandle: U, name: 'Freda push' });
-  const row = t.db.get('SELECT * FROM push_credentials');
+  const row = await t.db.get('SELECT * FROM push_credentials');
   assert.ok(!row.secret_enc.includes('app-pw'), 'chiffré au repos');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM push_devices').n, 2);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices')).n, 2);
   t.push.stop();
   const none = await withPush({ senders: { ios: null, android: null } });
   assert.strictEqual((await none.reg({ platform: 'ios', token: IOS })).status, 503);
@@ -81,7 +81,7 @@ test('observateur : une boîte avec appareil est surveillée avec SON identifian
   await sleep(150); assert.strictEqual(t.sent.length, 0, 'l’existant ne notifie pas');
   t.pmState.addMail(U, { subject: 'Facture confidentielle', from: 'Alice <alice@example.org>' });
   await waitFor(() => t.sent.length === 1);
-  assert.deepStrictEqual(t.sent[0].msg, { title: 'Nouveau message', body: U, data: { kind: 'new_mail', mailbox: U, count: 1 }, collapseId: t.boxId() });
+  assert.deepStrictEqual(t.sent[0].msg, { title: 'Nouveau message', body: U, data: { kind: 'new_mail', mailbox: U, count: 1 }, collapseId: await t.boxId() });
   assert.ok(!JSON.stringify(t.sent[0]).includes('Facture') && !JSON.stringify(t.sent[0]).includes('Alice'), 'aucun contenu transmis à Apple / Google');
   assert.strictEqual(t.sent[0].token, IOS); assert.strictEqual(t.sent[0].platform, 'ios');
   t.push.stop();
@@ -128,8 +128,8 @@ test('jeton mort (410 / UNREGISTERED) : l’appareil est supprimé ; les autres 
   await t.reg({ platform: 'ios', token: IOS }); await t.reg({ platform: 'android', token: ANDROID }); await t.ready();
   t.sender.iosResult = { invalid: true };
   t.pmState.addMail(U, {});
-  await waitFor(() => t.db.get("SELECT COUNT(*) AS n FROM push_devices WHERE platform = 'ios'").n === 0);
-  assert.strictEqual(t.db.get("SELECT COUNT(*) AS n FROM push_devices WHERE platform = 'android'").n, 1);
+  await waitFor(async () => (await t.db.get("SELECT COUNT(*) AS n FROM push_devices WHERE platform = 'ios'")).n === 0);
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM push_devices WHERE platform = 'android'")).n, 1);
   t.push.stop();
 });
 
@@ -141,7 +141,7 @@ test('un échec d’envoi ne tue pas l’observateur : le message suivant est no
   Object.defineProperty(t.sender, 'iosResult', { get() { calls++; if (calls <= 2) throw new Error('apns_503'); return orig; } });
   t.pmState.addMail(U, {}); await waitFor(() => calls >= 2);
   t.pmState.addMail(U, {}); await waitFor(() => t.sent.length >= 3);
-  assert.ok(t.db.get('SELECT COUNT(*) AS n FROM push_devices').n === 1, 'appareil conservé');
+  assert.ok((await t.db.get('SELECT COUNT(*) AS n FROM push_devices')).n === 1, 'appareil conservé');
   t.app.app.push.stop();
 });
 
@@ -155,7 +155,7 @@ test('désenregistrement : un appareil restant garde la surveillance ; le dernie
   assert.strictEqual((await t.mb('/api/mail/push', { method: 'DELETE', body: { token: ANDROID } })).status, 200);
   await waitFor(() => !t.pmState.sessions[U]);
   assert.ok(!t.pmState.appPasswords[U].includes(secret), 'identifiant de surveillance révoqué chez Purelymail');
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM push_credentials').n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_credentials')).n, 0);
   t.push.stop();
 });
 
@@ -165,15 +165,15 @@ test('un téléphone qui change de compte ne notifie plus l’ancien', async () 
   const t2 = await t.login('ventes', 'AutreMotDePasse#1');
   await t.reg({ platform: 'ios', token: IOS });
   await t.reg({ platform: 'ios', token: IOS }, t2);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', t.boxId()).n, 0);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', t.boxId('ventes')).n, 1);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', await t.boxId())).n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', await t.boxId('ventes'))).n, 1);
   t.push.stop();
 });
 
 test('suspension : observateur arrêté, session de boîte invalidée ; réactivation : l’observateur repart avec le même identifiant', async () => {
   const t = await withPush();
   await t.reg({ platform: 'ios', token: IOS }); await t.ready();
-  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await t.app.app.jobs.run();
   await t.push.reconcile();
   await waitFor(() => !t.pmState.sessions[U]);
   assert.strictEqual((await t.mb('/api/mail/push')).status, 401, 'session de boîte révoquée');
@@ -191,7 +191,7 @@ test('suspension : observateur arrêté, session de boîte invalidée ; réactiv
 test('changement du mot de passe de la boîte : sessions de l’application révoquées, notifications inchangées (autre identifiant)', async () => {
   const t = await withPush();
   await t.reg({ platform: 'ios', token: IOS }); await t.ready();
-  await t.user(`/api/mailboxes/${t.boxId()}/password`, { method: 'POST', body: { password: 'NouveauMotDePasse$77' } });
+  await t.user(`/api/mailboxes/${await t.boxId()}/password`, { method: 'POST', body: { password: 'NouveauMotDePasse$77' } });
   assert.strictEqual((await t.mb('/api/mail/push')).status, 401);
   t.pmState.addMail(U, {}); await waitFor(() => t.sent.length === 1);
   t.push.stop();
@@ -204,7 +204,7 @@ test('identifiant de surveillance révoqué côté Purelymail : l’observateur 
   t.push.stop(); await waitFor(() => !t.pmState.sessions[U]);
   t.pmState.appPasswords[U] = t.pmState.appPasswords[U].filter((p) => p !== oldSecret);        // révoqué à la main dans le portail
   await t.push.start();
-  await waitFor(() => t.db.get('SELECT COUNT(*) AS n FROM push_credentials').n === 0);
+  await waitFor(async () => (await t.db.get('SELECT COUNT(*) AS n FROM push_credentials')).n === 0);
   await t.push.reconcile(); await t.ready();
   const fresh = t.pmState.appPasswords[U].find((p) => p.startsWith('app-pw-'));
   assert.ok(fresh && fresh !== oldSecret);
@@ -215,9 +215,9 @@ test('identifiant de surveillance révoqué côté Purelymail : l’observateur 
 test('suppression de la boîte : appareils, identifiant et observateur disparaissent', async () => {
   const t = await withPush();
   await t.reg({ platform: 'ios', token: IOS }); await t.ready();
-  assert.strictEqual((await t.user('/api/mailboxes/' + t.boxId(), { method: 'DELETE' })).status, 200);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM push_devices').n, 0);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM push_credentials').n, 0);
+  assert.strictEqual((await t.user('/api/mailboxes/' + (await t.boxId()), { method: 'DELETE' })).status, 200);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices')).n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_credentials')).n, 0);
   await t.push.reconcile(); assert.strictEqual(t.push.watchers().size, 0);
   t.push.stop();
 });

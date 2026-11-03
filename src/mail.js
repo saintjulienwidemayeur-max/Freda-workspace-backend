@@ -65,13 +65,13 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   const box = (r) => ({ id: r.id, address: r.address, name: r.name, usedGb: r.used_gb, created: r.created_at.slice(0, 10), lastLogin: r.last_login ? r.last_login.slice(0, 10) : null, role: r.role, status: r.provider_status });
   const alias = (r) => ({ id: r.id, from: r.from_addr, to: r.to_addr });
 
-  const subscription = (userId) => {
-    const s = db.get("SELECT * FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due')", userId);
+  const subscription = async (userId) => {
+    const s = await db.get("SELECT * FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due')", userId);
     if (!s) throw new HttpError(402, 'Activez une offre Freda Mail pour créer des boîtes.', 'no_subscription');
     return s;
   };
-  const ownDomain = (userId, domain) => {
-    const d = db.get("SELECT * FROM domains WHERE user_id = ? AND name = ? AND status IN ('active','pending')", userId, String(domain || '').toLowerCase());
+  const ownDomain = async (userId, domain) => {
+    const d = await db.get("SELECT * FROM domains WHERE user_id = ? AND name = ? AND status IN ('active','pending')", userId, String(domain || '').toLowerCase());
     if (!d) throw new HttpError(404, 'Domaine introuvable dans votre espace.', 'not_found');
     return d;
   };
@@ -100,7 +100,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
    * la prochaine création de boîte réussira ; pending : pas encore visible). Zone gérée par Freda : publié automatiquement ; domaine externe : à ajouter chez l'hébergeur.
    */
   async function ownership(userId, domain) {
-    const d = ownDomain(userId, domain);
+    const d = await ownDomain(userId, domain);
     if (!pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     const code = await pm.ownershipCode();
     if (!code) throw new HttpError(502, 'Le serveur de messagerie n’a pas fourni le code de vérification. Réessayez.', 'mail_provider_error');
@@ -111,66 +111,66 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     return { domain: d.name, external: !!d.external, managedByFreda: !d.external && d.dns_mode === 'registrar', record: { type: 'TXT', name: '@', value: code }, status };
   }
 
-  const listBoxes = (userId) => db.all('SELECT * FROM mailboxes WHERE user_id = ? ORDER BY created_at', userId).map(box);
-  const listAliases = (userId) => db.all('SELECT * FROM aliases WHERE user_id = ? ORDER BY from_addr', userId).map(alias);
+  const listBoxes = async (userId) => (await db.all('SELECT * FROM mailboxes WHERE user_id = ? ORDER BY created_at', userId)).map(box);
+  const listAliases = async (userId) => (await db.all('SELECT * FROM aliases WHERE user_id = ? ORDER BY from_addr', userId)).map(alias);
 
   /** Crée une boîte. Le mot de passe initial n'est renvoyé QU'ICI (jamais stocké). */
   async function createBox(userId, { local, domain, name, password: chosen }) {
-    const sub = subscription(userId);
+    const sub = await subscription(userId);
     const lp = String(local || '').trim().toLowerCase();
     if (!LOCAL.test(lp)) throw new HttpError(400, 'Nom de boîte invalide (lettres, chiffres, point, tiret).', 'invalid_local');
-    const d = ownDomain(userId, domain);
+    const d = await ownDomain(userId, domain);
     const plan = cfg.plans[sub.plan];
-    const count = db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId).n;
+    const count = (await db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId)).n;
     if (count >= plan.mailboxes) throw new HttpError(403, `Votre offre ${plan.name} est limitée à ${plan.mailboxes} boîte${plan.mailboxes > 1 ? 's' : ''}. Passez à une offre supérieure.`, 'plan_limit');
     const address = `${lp}@${d.name}`;
-    if (db.get('SELECT 1 FROM mailboxes WHERE address = ?', address) || db.get('SELECT 1 FROM aliases WHERE from_addr = ?', address)) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
+    if ((await db.get('SELECT 1 FROM mailboxes WHERE address = ?', address)) || (await db.get('SELECT 1 FROM aliases WHERE from_addr = ?', address))) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
     const chosenPw = chosen === undefined || chosen === null || chosen === '' ? null : validatePassword(chosen, lp);
     const password = chosenPw || crypto.randomBytes(12).toString('base64url');
     let status = 'pending_provider';
     if (pm.enabled) { await ensureProviderDomain(userId, d); await pm.createUser({ local: lp, domain: d.name, password }); status = 'active'; }
     const bid = id('mbx');
-    db.run('INSERT INTO mailboxes (id, user_id, domain, local_part, address, name, role, provider_status, created_at) VALUES (?,?,?,?,?,?,?,?,?)', bid, userId, d.name, lp, address, String(name || lp).trim().slice(0, 80), count === 0 ? 'Propriétaire' : 'Utilisateur', status, new Date().toISOString());
-    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'mail-plus', `Boîte ${address} créée`, now());
-    return { mailbox: box(db.get('SELECT * FROM mailboxes WHERE id = ?', bid)), initialPassword: status === 'active' && !chosenPw ? password : null, providerReady: status === 'active' };
+    await db.run('INSERT INTO mailboxes (id, user_id, domain, local_part, address, name, role, provider_status, created_at) VALUES (?,?,?,?,?,?,?,?,?)', bid, userId, d.name, lp, address, String(name || lp).trim().slice(0, 80), count === 0 ? 'Propriétaire' : 'Utilisateur', status, new Date().toISOString());
+    await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'mail-plus', `Boîte ${address} créée`, now());
+    return { mailbox: box(await db.get('SELECT * FROM mailboxes WHERE id = ?', bid)), initialPassword: status === 'active' && !chosenPw ? password : null, providerReady: status === 'active' };
   }
 
   async function removeBox(userId, boxId) {
-    const b = db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
+    const b = await db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
     if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
-    if (b.role === 'Propriétaire' && db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId).n > 1) throw new HttpError(400, 'Supprimez d’abord les autres boîtes ou transférez la propriété.', 'owner_box');
+    if (b.role === 'Propriétaire' && (await db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId)).n > 1) throw new HttpError(400, 'Supprimez d’abord les autres boîtes ou transférez la propriété.', 'owner_box');
     if (pm.enabled && b.provider_status !== 'pending_provider') {
       if (b.provider_user) await dropSuspendRules(b, b.provider_user);
       await pm.deleteUser({ local: providerLocal(b), domain: b.domain });
     }
-    db.tx(() => {
-      db.run('DELETE FROM push_devices WHERE mailbox_id = ?', b.id); db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', b.id);
-      for (const a of db.all('SELECT * FROM aliases WHERE user_id = ? AND to_addr = ?', userId, b.address)) db.run('DELETE FROM aliases WHERE id = ?', a.id);
-      db.run('DELETE FROM mailboxes WHERE id = ?', b.id);
+    await db.tx(async () => {
+      await db.run('DELETE FROM push_devices WHERE mailbox_id = ?', b.id); await db.run('DELETE FROM push_credentials WHERE mailbox_id = ?', b.id);
+      for (const a of await db.all('SELECT * FROM aliases WHERE user_id = ? AND to_addr = ?', userId, b.address)) await db.run('DELETE FROM aliases WHERE id = ?', a.id);
+      await db.run('DELETE FROM mailboxes WHERE id = ?', b.id);
     });
     return { ok: true };
   }
 
   async function addAlias(userId, { from, to }) {
-    subscription(userId);
+    await subscription(userId);
     const f = String(from || '').trim().toLowerCase(), t = String(to || '').trim().toLowerCase();
     const m = /^([^@\s]+)@([^@\s]+)$/.exec(f);
     if (!m || !LOCAL.test(m[1])) throw new HttpError(400, 'Adresse d’alias invalide.', 'invalid_alias');
-    ownDomain(userId, m[2]);
-    const target = db.get('SELECT * FROM mailboxes WHERE user_id = ? AND address = ?', userId, t);
+    await ownDomain(userId, m[2]);
+    const target = await db.get('SELECT * FROM mailboxes WHERE user_id = ? AND address = ?', userId, t);
     if (!target) throw new HttpError(400, 'La destination doit être l’une de vos boîtes.', 'invalid_target');
-    if (db.get('SELECT 1 FROM mailboxes WHERE address = ?', f) || db.get('SELECT 1 FROM aliases WHERE from_addr = ?', f)) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
+    if ((await db.get('SELECT 1 FROM mailboxes WHERE address = ?', f)) || (await db.get('SELECT 1 FROM aliases WHERE from_addr = ?', f))) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
     let ref = '';
     if (pm.enabled && target.provider_status === 'active') ref = String((await pm.createRoutingRule({ domain: m[2], local: m[1], targets: [t] })).id || '');
     const aid = id('als');
-    db.run('INSERT INTO aliases (id, user_id, from_addr, to_addr, provider_ref) VALUES (?,?,?,?,?)', aid, userId, f, t, ref);
-    return alias(db.get('SELECT * FROM aliases WHERE id = ?', aid));
+    await db.run('INSERT INTO aliases (id, user_id, from_addr, to_addr, provider_ref) VALUES (?,?,?,?,?)', aid, userId, f, t, ref);
+    return alias(await db.get('SELECT * FROM aliases WHERE id = ?', aid));
   }
   async function removeAlias(userId, aliasId) {
-    const a = db.get('SELECT * FROM aliases WHERE id = ? AND user_id = ?', String(aliasId), userId);
+    const a = await db.get('SELECT * FROM aliases WHERE id = ? AND user_id = ?', String(aliasId), userId);
     if (!a) throw new HttpError(404, 'Alias introuvable.', 'not_found');
     if (pm.enabled && a.provider_ref) await pm.deleteRoutingRule(a.provider_ref);
-    db.run('DELETE FROM aliases WHERE id = ?', a.id);
+    await db.run('DELETE FROM aliases WHERE id = ?', a.id);
     return { ok: true };
   }
 
@@ -184,7 +184,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     try {
       const target = `${b.provider_user}@${b.domain}`;
       if (!(await pm.findRules({ domain: b.domain, local: b.local_part, target })).length) await pm.createRoutingRule({ domain: b.domain, local: b.local_part, targets: [target] });
-      db.run("UPDATE mailboxes SET rule_state = 'set' WHERE id = ?", b.id); return true;
+      await db.run("UPDATE mailboxes SET rule_state = 'set' WHERE id = ?", b.id); return true;
     } catch (e) { log('warn', 'suspend_rule_failed', { mailbox: b.address }); return false; }
   }
   async function dropSuspendRules(b, alias) {
@@ -203,26 +203,26 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
    */
   async function suspendMailboxes(userId) {
     let suspended = 0, failed = 0;
-    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'active'", userId)) {
+    for (const b of await db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'active'", userId)) {
       try {
         const alias = renameMode ? 'susp-' + crypto.randomBytes(5).toString('hex') : '';
         if (pm.enabled) await pm.modifyUser({ local: b.local_part, domain: b.domain, newLocal: alias || undefined, password: alias ? undefined : secret() });
-        db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ?, tokens_valid_after = ? WHERE id = ?", alias, alias ? 'pending' : '', Date.now(), b.id);
+        await db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ?, tokens_valid_after = ? WHERE id = ?", alias, alias ? 'pending' : '', Date.now(), b.id);
         suspended++;
       } catch (e) { failed++; log('warn', 'mailbox_suspend_failed', { mailbox: b.address }); }
     }
-    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended' AND rule_state = 'pending'", userId)) if (!(await ensureSuspendRule(b))) failed++;
+    for (const b of await db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended' AND rule_state = 'pending'", userId)) if (!(await ensureSuspendRule(b))) failed++;
     return { suspended, failed };
   }
 
   /** Réactivation après paiement : mode rename -> l'ancien nom est rétabli, le client retrouve SES identifiants (aucun mot de passe à renvoyer). Mode password -> nouveau mot de passe, renvoyé UNE fois. */
   async function reactivateMailboxes(userId) {
     const mailboxes = []; let failed = 0;
-    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended'", userId)) {
+    for (const b of await db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended'", userId)) {
       const password = b.provider_user ? undefined : secret();
       try {
         if (pm.enabled) await pm.modifyUser({ local: providerLocal(b), domain: b.domain, newLocal: b.provider_user ? b.local_part : undefined, password });
-        db.run("UPDATE mailboxes SET provider_status = 'active', provider_user = '', rule_state = ? WHERE id = ?", b.provider_user ? 'cleanup' : '', b.id);
+        await db.run("UPDATE mailboxes SET provider_status = 'active', provider_user = '', rule_state = ? WHERE id = ?", b.provider_user ? 'cleanup' : '', b.id);
         mailboxes.push({ address: b.address, password });
       } catch (e) { failed++; log('warn', 'mailbox_reactivate_failed', { mailbox: b.address }); }
     }
@@ -233,9 +233,9 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   /** Règles de routage de suspension : posées pour les boîtes suspendues, retirées pour les boîtes réactivées (retentées tant que nécessaire). */
   async function reconcileRules(userId) {
     let failed = 0;
-    for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND rule_state IN ('pending','cleanup')", userId)) {
+    for (const b of await db.all("SELECT * FROM mailboxes WHERE user_id = ? AND rule_state IN ('pending','cleanup')", userId)) {
       if (b.rule_state === 'pending' && b.provider_status === 'suspended') { if (!(await ensureSuspendRule(b))) failed++; }
-      else if (b.rule_state === 'cleanup' && b.provider_status === 'active') { if (await dropSuspendRules(b)) db.run("UPDATE mailboxes SET rule_state = '' WHERE id = ?", b.id); else failed++; }
+      else if (b.rule_state === 'cleanup' && b.provider_status === 'active') { if (await dropSuspendRules(b)) await db.run("UPDATE mailboxes SET rule_state = '' WHERE id = ?", b.id); else failed++; }
     }
     return { failed };
   }
@@ -243,14 +243,14 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   /* ---------- Application mobile ---------- */
   /** Le titulaire du compte change (ou réinitialise) le mot de passe d'une de ses boîtes. */
   async function changePassword(userId, boxId, password) {
-    const b = db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
+    const b = await db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
     if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
     if (b.provider_status === 'suspended') throw new HttpError(409, 'Cette boîte est suspendue : réglez votre offre pour la réactiver.', 'mailbox_suspended');
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     const pw = validatePassword(password, b.local_part);
     await pm.modifyUser({ local: b.local_part, domain: b.domain, password: pw });
-    db.run('UPDATE mailboxes SET tokens_valid_after = ? WHERE id = ?', Date.now(), b.id);   // les sessions de l'application sont déconnectées
-    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'key-round', `Mot de passe de ${b.address} modifié`, now());
+    await db.run('UPDATE mailboxes SET tokens_valid_after = ? WHERE id = ?', Date.now(), b.id);   // les sessions de l'application sont déconnectées
+    await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'key-round', `Mot de passe de ${b.address} modifié`, now());
     return { ok: true };
   }
 
@@ -268,9 +268,9 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     if (!/^[^@\s]+@[^@\s]+$/.test(address) || typeof password !== 'string' || !password || password.length > 256) throw bad();
     const f = failures.get(address);
     if (f && f.n >= MAX_FAILS && Date.now() - f.t < LOCK_MS) throw new HttpError(429, 'Trop de tentatives. Réessayez dans quelques minutes.', 'rate_limited');
-    const b = db.get('SELECT * FROM mailboxes WHERE address = ?', address);
+    const b = await db.get('SELECT * FROM mailboxes WHERE address = ?', address);
     if (!b) { await new Promise((r) => setTimeout(r, 150)); throw bad(); }
-    const sub = db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
+    const sub = await db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
     if (b.provider_status === 'suspended' || !sub || ['suspended', 'cancelled'].includes(sub.status)) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     let result;
@@ -283,7 +283,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
       throw bad();
     }
     failures.delete(address);
-    db.run('UPDATE mailboxes SET last_login = ? WHERE id = ?', new Date().toISOString(), b.id);
+    await db.run('UPDATE mailboxes SET last_login = ? WHERE id = ?', new Date().toISOString(), b.id);
     return { mailbox: { address: b.address, name: b.name, status: 'active' }, token: issueMailboxToken(cfg, b), tokenExpiresInDays: cfg.push.sessionDays, ...connection() };
   }
 

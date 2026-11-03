@@ -35,7 +35,7 @@ function createPaym(cfg, log) {
   const { clientId, clientSecret, baseUrl } = cfg.payments.paym;
   async function post(endpoint, body, retry = 0) {
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
-    if (res.status === 429 && retry < 1) { await new Promise((r) => setTimeout(r, 2000)); return post(endpoint, body, retry + 1); }
+    if (res.status === 429 && retry < 1) { await new Promise((r) => setTimeout(r, 2000)); return await post(endpoint, body, retry + 1); }
     let data;
     try { data = await res.json(); } catch (e) { throw new PaymentError('Le service de paiement est indisponible. Réessayez.', 502); }
     if (!res.ok) { log('error', 'paym_error', { endpoint, status: res.status }); throw new PaymentError(data.message || data.error || 'Le service de paiement a refusé la demande.', res.status >= 500 ? 502 : 402); }
@@ -89,8 +89,8 @@ function createPayments(cfg, log = () => {}, { db } = {}) {
         throw new PaymentError('Le paiement par carte est momentanément indisponible. Réessayez ou utilisez MonCash.', 502);
       }
     },
-    verify: (a) => (isCard(a.order) ? stripe.verify(a) : base.verify(a)),
-    refund: (a) => (isCard(a.order) ? stripe.refund(a) : base.refund(a)),
+    verify: async (a) => (isCard(a.order) ? (await stripe.verify(a)) : base.verify(a)),
+    refund: async (a) => (isCard(a.order) ? (await stripe.refund(a)) : base.refund(a)),
   };
 }
 

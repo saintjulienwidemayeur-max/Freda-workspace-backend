@@ -59,25 +59,25 @@ function createStripe({ cfg, db, log }) {
   }
 
   async function customerFor(userId) {
-    const u = db.get('SELECT id, email, name, stripe_customer_id FROM users WHERE id = ?', userId);
+    const u = await db.get('SELECT id, email, name, stripe_customer_id FROM users WHERE id = ?', userId);
     if (!u) throw new HttpError(404, 'Compte introuvable.', 'not_found');
     if (u.stripe_customer_id) return u.stripe_customer_id;
     const c = await api('POST', '/v1/customers', { email: u.email, name: u.name || undefined, metadata: { user_id: u.id } }, { idem: 'cust-' + u.id });
-    db.run('UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id = ?', c.id, u.id, '');
-    return db.get('SELECT stripe_customer_id FROM users WHERE id = ?', u.id).stripe_customer_id;
+    await db.run('UPDATE users SET stripe_customer_id = ? WHERE id = ? AND stripe_customer_id = ?', c.id, u.id, '');
+    return (await db.get('SELECT stripe_customer_id FROM users WHERE id = ?', u.id)).stripe_customer_id;
   }
 
   const cents = (usd) => Math.round(usd * 100);
 
   /** Enregistre (ou retrouve) la carte utilisée ; la première carte devient la carte par défaut. */
-  function saveCard(userId, pm) {
+  async function saveCard(userId, pm) {
     if (!pm || !pm.id || !pm.card) return null;
-    const known = db.get('SELECT id FROM payment_methods WHERE user_id = ? AND stripe_pm = ?', userId, pm.id);
+    const known = await db.get('SELECT id FROM payment_methods WHERE user_id = ? AND stripe_pm = ?', userId, pm.id);
     if (known) return known.id;
     const exp = `${String(pm.card.exp_month).padStart(2, '0')}/${String(pm.card.exp_year).slice(-2)}`;
-    const first = !db.get('SELECT 1 FROM payment_methods WHERE user_id = ?', userId);
+    const first = !(await db.get('SELECT 1 FROM payment_methods WHERE user_id = ?', userId));
     const mid = 'pm_' + crypto.randomBytes(8).toString('hex');
-    db.run('INSERT INTO payment_methods (id, user_id, type, phone, brand, last4, exp, is_default, created_at, stripe_pm) VALUES (?,?,?,?,?,?,?,?,?,?)', mid, userId, 'card', '', pm.card.brand || '', pm.card.last4 || '', exp, first ? 1 : 0, new Date().toISOString(), pm.id);
+    await db.run('INSERT INTO payment_methods (id, user_id, type, phone, brand, last4, exp, is_default, created_at, stripe_pm) VALUES (?,?,?,?,?,?,?,?,?,?)', mid, userId, 'card', '', pm.card.brand || '', pm.card.last4 || '', exp, first ? 1 : 0, new Date().toISOString(), pm.id);
     return mid;
   }
 
@@ -97,7 +97,7 @@ function createStripe({ cfg, db, log }) {
 
   /** Prélèvement sans action du client sur une carte enregistrée. `allowRedirect` : en cas d'authentification exigée, bascule vers Checkout (achat initié par le client). */
   async function chargeSaved({ amount, reference, userId, methodId, label, allowRedirect, orderId }) {
-    const m = db.get("SELECT * FROM payment_methods WHERE id = ? AND user_id = ? AND type = 'card' AND stripe_pm <> ''", methodId, userId);
+    const m = await db.get("SELECT * FROM payment_methods WHERE id = ? AND user_id = ? AND type = 'card' AND stripe_pm <> ''", methodId, userId);
     if (!m) throw new HttpError(404, 'Carte enregistrée introuvable.', 'not_found');
     const customer = await customerFor(userId);
     try {
@@ -107,7 +107,7 @@ function createStripe({ cfg, db, log }) {
     } catch (e) {
       if (!(e instanceof StripeError)) throw e;
       const needsAuth = e.code === 'authentication_required' || e.code === 'requires_action' || e.paymentIntent && e.paymentIntent.status === 'requires_action';
-      if (needsAuth && allowRedirect) return createCheckout({ amount, reference, userId, label, orderId });
+      if (needsAuth && allowRedirect) return await createCheckout({ amount, reference, userId, label, orderId });
       if (e.status >= 500) throw e;
       const err = new Error(needsAuth ? 'Votre banque demande une authentification : payez depuis votre espace client.' : 'Carte refusée par la banque. Essayez une autre carte ou MonCash.');
       err.name = 'CardDeclined'; err.code = e.code; throw err;
@@ -115,7 +115,7 @@ function createStripe({ cfg, db, log }) {
   }
 
   async function sessionFor(order) {
-    return api('GET', `/v1/checkout/sessions/${encodeURIComponent(order.charge_id)}`, { expand: ['payment_intent.payment_method'] });
+    return await api('GET', `/v1/checkout/sessions/${encodeURIComponent(order.charge_id)}`, { expand: ['payment_intent.payment_method'] });
   }
 
   /** État réel du paiement, lu chez Stripe. Enregistre la carte au passage. */
@@ -128,7 +128,7 @@ function createStripe({ cfg, db, log }) {
     const s = await sessionFor(order);
     if (s.payment_status !== 'paid') return { status: s.status === 'expired' ? 'failed' : 'pending' };
     const pi = s.payment_intent && typeof s.payment_intent === 'object' ? s.payment_intent : null;
-    if (pi && pi.payment_method && typeof pi.payment_method === 'object') { try { saveCard(order.user_id, pi.payment_method); } catch (e) { log('warn', 'card_save_failed', { message: e.message }); } }
+    if (pi && pi.payment_method && typeof pi.payment_method === 'object') { try { await saveCard(order.user_id, pi.payment_method); } catch (e) { log('warn', 'card_save_failed', { message: e.message }); } }
     return { status: 'paid', amountCents: s.amount_total || 0, paymentIntent: pi ? pi.id : (typeof s.payment_intent === 'string' ? s.payment_intent : '') };
   }
 
@@ -137,7 +137,7 @@ function createStripe({ cfg, db, log }) {
     if (pi.startsWith('cs_')) { const s = await sessionFor(order); pi = typeof s.payment_intent === 'object' && s.payment_intent ? s.payment_intent.id : s.payment_intent; }
     if (!pi) throw new Error('Paiement Stripe introuvable pour le remboursement.');
     const c = amount ? cents(amount) : undefined;
-    return api('POST', '/v1/refunds', { payment_intent: pi, amount: c, metadata: { reference: order.reference } }, { idem: `refund-${order.reference}-${c || 'full'}` });
+    return await api('POST', '/v1/refunds', { payment_intent: pi, amount: c, metadata: { reference: order.reference } }, { idem: `refund-${order.reference}-${c || 'full'}` });
   }
 
   /** Détache la carte chez Stripe quand le client la supprime (elle ne pourra plus être débitée). */

@@ -1,10 +1,10 @@
 # Freda Workspace — Backend
 
-API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https://github.com/saintjulienwidemayeur-max/Freda-workspace) : comptes, domaines (NameSilo), paiements MonCash/NatCash (Pay'm), DNS, Freda Mail (Purelymail), renouvellements, e-mails et alertes. Base de données SQLite (`node:sqlite`).
+API Node.js (≥ 22.13, une seule dépendance d'exécution : `pg`) pour [Freda-workspace](https://github.com/saintjulienwidemayeur-max/Freda-workspace) : comptes, domaines (NameSilo), paiements MonCash/NatCash (Pay'm), DNS, Freda Mail (Purelymail), renouvellements, e-mails et alertes. Base de données PostgreSQL (Supabase).
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 123 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 141 tests, tous contre de faux serveurs et un vrai PostgreSQL local (PGlite) — aucun appel réel
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -43,7 +43,7 @@ Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purel
 3. Côté serveur : un mot de passe d'application Purelymail « Freda push » **par boîte** (jamais le mot de passe du client, chiffré avec `DATA_KEY`, révoqué quand le dernier appareil part) et un observateur **IMAP IDLE** par boîte active qui a un appareil. Il compare `UIDNEXT` au dernier UID notifié : **pas de doublon, rattrapage après redémarrage**, rien pour une suppression. Rafales regroupées. Réconciliation toutes les 60 s : suspension / réactivation / suppression sont prises en compte (la suspension arrête l'observateur ; la réactivation le relance sans réinscription).
 4. Contenu : `title: "Nouveau message"` (ou « N nouveaux messages »), `body: <adresse de la boîte>`, `data: { kind: "new_mail", mailbox, count }`. **Aucun expéditeur ni objet** par défaut ; `PUSH_PREVIEW=true` les ajoute (ils transitent alors par Apple / Google). Les jetons morts (APNs 410 / `BadDeviceToken`, FCM `UNREGISTERED`) sont supprimés.
 5. Configuration : iPhone `APNS_KEY` (contenu du `.p8`, texte ou base64), `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, `APNS_ENV=sandbox|production` ; Android `FCM_SERVICE_ACCOUNT` (JSON du compte de service Firebase, texte ou base64). Une plateforme non configurée répond `503 push_not_configured`. À l'app de gérer côté appareil : permission de notification, canal Android `mail`, et récupération des messages en IMAP à l'ouverture sur `data.kind == "new_mail"`.
-6. Limites : **une seule instance** (une connexion IMAP par boîte surveillée, comme SQLite) ; la charge utile reste minimale par choix de confidentialité ; non testé avec de vrais APNs / FCM / Purelymail (voir ci-dessous le script de test réel, qui vérifie maintenant aussi `createAppPassword`, IDLE et la révocation).
+6. Limites : **une seule instance** (une connexion IMAP par boîte surveillée, comme les limiteurs de débit en mémoire) ; la charge utile reste minimale par choix de confidentialité ; non testé avec de vrais APNs / FCM / Purelymail (voir ci-dessous le script de test réel, qui vérifie maintenant aussi `createAppPassword`, IDLE et la révocation).
 
 
 ## Sécurité
@@ -61,7 +61,7 @@ Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purel
 6. **Purelymail** : adaptateur aligné sur la spécification OpenAPI de l'API v0 (chemin et format d'erreur vérifiés contre `purelymail.com`). Le domaine est ajouté automatiquement (`getOwnershipCode` → TXT publié dans la zone → `addDomain`) avant le premier `createUser`. Limites : (a) la 1re boîte d'un domaine neuf peut répondre `409 domain_pending_verification` le temps de la propagation DNS (jusqu'à 15 min) — le client réessaie ; à la souscription, la boîte n'est alors pas créée et il faut la créer ensuite depuis l'espace client ; (b) pour un domaine **externe** (mode `records`), le TXT de propriété est enregistré mais le client doit l'ajouter lui-même chez son hébergeur DNS ; (c) aucun appel réel n'a encore été fait avec une vraie clé : faire un test (`PURELYMAIL_API_KEY`) avec un domaine jetable avant la production.
 7. **Pay'm** : écrit d'après le code de `backend-fredapay` (documentation inaccessible). Faire un premier paiement de test réel.
 8. **NameSilo** : vérifié avec la référence officielle et un appel réel (clé invalide → HTTP 401 + code 110). Non documenté publiquement : table complète des codes, limites de débit, et la forme du paramètre `rrhost` pour la racine d'un domaine (on envoie `rrhost=` vide).
-9. **SQLite = une seule instance** (disque Render). Pour plusieurs instances : PostgreSQL (tout l'accès SQL passe par `src/db.js` et les modules).
+9. **Base de données = PostgreSQL (Supabase)**, accès asynchrone via `src/db.js` (`pg`). Migrations = `migrations/*.sql`, appliquées au démarrage (table `app_migrations`, verrou consultatif). Toutes les tables ont **RLS activé sans politique** : l'API publique de Supabase (clés `anon` / `publishable`) ne voit rien, seul le backend (rôle propriétaire de la base) y accède. **Une seule instance du backend** reste requise (observateurs push, limiteurs de débit en mémoire, tâches périodiques).
 10. **Apple Sign-In** non branché. **Factures PDF** : générées dans le navigateur (jsPDF) ; le serveur stocke les factures.
 11. Limitation de débit en mémoire (par instance).
 12. **Suspension par renommage** : les mots de passe d'application d'un utilisateur Purelymail le suivent lors d'un renommage ; ils cessent de fonctionner pour l'ancienne adresse et le nouveau nom aléatoire n'est jamais montré au client. Le comportement du renommage (messages conservés, règle de routage vers la boîte renommée, retour au nom d'origine) suit la spécification de l'API mais **n'a pas été testé avec un vrai compte Purelymail** : à vérifier avec une boîte jetable avant la production. Variable `MAIL_SUSPEND_MODE=password` pour revenir à un simple changement de mot de passe (ne révoque PAS les mots de passe d'application). Les alias qui pointent vers une boîte suspendue peuvent cesser de livrer pendant la suspension.
@@ -73,6 +73,12 @@ PURELYMAIL_API_KEY=… PURELYMAIL_TEST_DOMAIN=votre-domaine.com npm run live:pur
 ```
 Crée `fredatest-xxxxxxxx@domaine`, vérifie avec notre propre code (adaptateur + client IMAP) : `createUser`, connexion IMAP `AUTHENTICATE PLAIN` (bon / mauvais mot de passe), **suspension par renommage** (ancienne adresse refusée, mot de passe inchangé), règle de routage créée puis retrouvée, **livraison du courrier** de l'ancienne adresse vers la boîte renommée (`--deliver`), réactivation (mêmes identifiants), changement de mot de passe — puis supprime la boîte et la règle, même en cas d'échec. Sortie `PASS` / `FAIL`, code 1 au moindre échec ; aucun mot de passe affiché ; ne touche à aucune autre boîte. Si le renommage ne bloque pas l'ancienne adresse ou si la livraison échoue, passez `MAIL_SUSPEND_MODE=password` et signalez-le.
 
+## Base de données (Supabase)
+1. Créez le projet Supabase (région proche de Render), plan **Pro** pour la production (sauvegardes quotidiennes ; le plan gratuit met le projet en pause).
+2. Renseignez `DATABASE_URL` (URI du **Session pooler**, mot de passe inclus) comme secret Render. Au premier démarrage, `migrations/*.sql` sont appliquées automatiquement ; sur le projet `Freda Workspace` elles l'ont déjà été via le connecteur Supabase (001–003, enregistrées dans `app_migrations`, schéma identique à celui testé).
+3. Tests : `npm test` utilise PGlite (vrai PostgreSQL dans Node) ; `tests/db-pg.test.js` exerce le pilote `pg` réel via le protocole réseau.
+4. Nouvelle migration : ajoutez `migrations/00N_nom.sql` (ne modifiez jamais une migration déjà appliquée). Les tables créées par SQL sur Supabase ont RLS activé automatiquement ; gardez malgré tout `ENABLE ROW LEVEL SECURITY` dans la migration.
+
 ## Premier achat réel (checklist)
 1. `node scripts/live-check.js` avec votre clé : solde, prix, marges (lecture seule).
 2. Dry-run complet depuis le site.
@@ -81,4 +87,4 @@ Crée `fredatest-xxxxxxxx@domaine`, vérifie avec notre propre code (adaptateur 
 5. Brancher `ALERT_WEBHOOK_URL` avant d'ouvrir au public.
 
 ## Déploiement (Render)
-`render.yaml` déclare le service `freda-workspace-api` (disque persistant pour la base). Renseignez les secrets, associez `api.fredaworkspace.com`, puis dans le frontend : `API_BASE: 'https://api.fredaworkspace.com/api'` et `DEMO_MODE: false`.
+`render.yaml` déclare le service `freda-workspace-api` (base = Supabase, pas de disque). Renseignez les secrets, associez `api.fredaworkspace.com`, puis dans le frontend : `API_BASE: 'https://api.fredaworkspace.com/api'` et `DEMO_MODE: false`.

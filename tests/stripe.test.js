@@ -6,13 +6,13 @@ const { verifySignature, form } = require('../src/stripe');
 const { loadConfig, assertSafe } = require('../src/config');
 test.after(closeAll);
 
-const withStripe = (over = {}) => setup({ env: { PAYMENTS_PROVIDER: 'paym' }, stripe: true, ...over });
+const withStripe = async (over = {}) => (await setup({ env: { PAYMENTS_PROVIDER: 'paym' }, stripe: true, ...over }));
 const checkout = (t, body) => t.user('/api/checkout', { method: 'POST', body: { kind: 'domain', years: 1, method: 'card', domains: ['neuf.com'], ...body } });
-const status = async (t, id) => { t.db.run('UPDATE orders SET last_check = 0'); return (await t.user('/api/orders/' + id)).json(); };
+const status = async (t, id) => { await t.db.run('UPDATE orders SET last_check = 0'); return (await t.user('/api/orders/' + id)).json(); };
 const sign = (body, secret = 'whsec_test', t = Math.floor(Date.now() / 1000)) => `t=${t},v1=${crypto.createHmac('sha256', secret).update(`${t}.${body}`).digest('hex')}`;
 const webhook = (t, payload, sig) => { const body = JSON.stringify(payload); return t.api('/api/webhooks/stripe', { method: 'POST', headers: { 'Stripe-Signature': sig === undefined ? sign(body) : sig }, body: payload }); };
 const completed = (ref) => ({ id: 'evt_1', type: 'checkout.session.completed', data: { object: { client_reference_id: ref } } });
-const payAndComplete = (t, r) => { t.stState.sessions[t.db.get('SELECT charge_id FROM orders WHERE id = ?', r.orderId).charge_id].payment_status = 'paid'; };
+const payAndComplete = async (t, r) => { t.stState.sessions[(await t.db.get('SELECT charge_id FROM orders WHERE id = ?', r.orderId)).charge_id].payment_status = 'paid'; };
 
 test('carte : Checkout hébergé avec carte enregistrée pour plus tard, montant en cents calculé côté serveur, aucune donnée de carte chez nous', async () => {
   const t = await withStripe();
@@ -34,7 +34,7 @@ test('carte : webhook signé -> commande exécutée une seule fois, carte enregi
   const t = await withStripe();
   const r = await (await checkout(t, {})).json();
   assert.strictEqual((await status(t, r.orderId)).status, 'pending', 'pas payé : toujours en attente');
-  payAndComplete(t, r);
+  await payAndComplete(t, r);
   assert.strictEqual((await webhook(t, completed(r.reference))).status, 200);
   assert.strictEqual((await webhook(t, completed(r.reference))).status, 200, 'webhook rejoué : idempotent');
   assert.strictEqual(t.ns.calls.filter((x) => x.op === 'registerDomain').length, 1);
@@ -59,7 +59,7 @@ test('webhook : signature invalide, mauvais secret, horodatage trop ancien -> 40
 test('carte enregistrée : second achat sans action du client (off_session), puis authentification exigée -> bascule vers Checkout, refus -> 402', async () => {
   const t = await withStripe();
   const first = await (await checkout(t, {})).json();
-  payAndComplete(t, first); await status(t, first.orderId);
+  await payAndComplete(t, first); await status(t, first.orderId);
   const methodId = (await (await t.user('/api/payment-methods')).json()).methods[0].id;
   const second = await (await checkout(t, { domains: ['deux.com'], methodId })).json();
   assert.strictEqual(second.status, 'succeeded', 'débité immédiatement');
@@ -79,11 +79,11 @@ test('carte enregistrée : second achat sans action du client (off_session), pui
 
 async function dueSubscription(t) {
   const first = await (await checkout(t, {})).json();
-  payAndComplete(t, first); await status(t, first.orderId);
+  await payAndComplete(t, first); await status(t, first.orderId);
   const sub = await checkout(t, { kind: 'subscription', plan: 'starter', cycle: 'monthly', domain: 'neuf.com', methodId: (await (await t.user('/api/payment-methods')).json()).methods[0].id });
   assert.strictEqual((await sub.json()).status, 'succeeded');
   const past = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
-  t.db.run('UPDATE subscriptions SET renews_at = ?', past);
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', past);
   return past;
 }
 
@@ -94,12 +94,12 @@ test('abonnement échu : prélevé automatiquement sur la carte enregistrée, pr
   const before = charges();
   await t.app.app.jobs.run();
   assert.strictEqual(charges(), before + 1);
-  const s = t.db.get('SELECT * FROM subscriptions');
+  const s = await t.db.get('SELECT * FROM subscriptions');
   assert.ok(s.renews_at > past && s.status === 'active', 'prolongé, pas « past_due »');
   assert.ok(!t.mailer.sent.some((m) => /à régler/.test(m.subject)), 'aucun rappel de paiement : déjà renouvelé');
   await t.app.app.jobs.run(); await t.app.app.jobs.run();
   assert.strictEqual(charges(), before + 1, 'pas de double débit');
-  assert.strictEqual(t.db.get("SELECT COUNT(*) AS n FROM invoices WHERE label LIKE '%Starter%'").n, 2);
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM invoices WHERE label LIKE '%Starter%'")).n, 2);
 });
 
 test('abonnement échu, carte refusée : 3 tentatives maximum (échéance, +3 j, +5 j), puis past_due et e-mail au client', async () => {
@@ -110,46 +110,46 @@ test('abonnement échu, carte refusée : 3 tentatives maximum (échéance, +3 j,
   const base = tries();
   await t.app.app.jobs.run(); await t.app.app.jobs.run();
   assert.strictEqual(tries(), base + 1, 'une tentative par palier, pas une par exécution');
-  assert.strictEqual(t.db.get('SELECT status FROM subscriptions').status, 'past_due');
+  assert.strictEqual((await t.db.get('SELECT status FROM subscriptions')).status, 'past_due');
   assert.ok(t.mailer.sent.some((m) => /à régler/.test(m.subject)), 'le client est prévenu');
-  t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 4 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
-  t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
-  t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 4 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
   assert.strictEqual(tries(), base + 3);
   t.stState.decline = false;
-  t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 6 * 86400000).toISOString().slice(0, 10)); await t.app.app.jobs.run();
   assert.strictEqual(tries(), base + 3, 'plus aucune tentative après la troisième');
 });
 
 test('abonnement échu sans carte enregistrée (MonCash) : aucun prélèvement, rappels habituels', async () => {
   const t = await withStripe();
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly', method: 'moncash' } });
-  const r = t.db.get('SELECT * FROM orders ORDER BY created_at DESC LIMIT 1'); t.state.paid.add(r.reference); await status(t, r.id);
-  t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 86400000).toISOString().slice(0, 10));
+  const r = await t.db.get('SELECT * FROM orders ORDER BY created_at DESC LIMIT 1'); t.state.paid.add(r.reference); await status(t, r.id);
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', new Date(Date.now() - 86400000).toISOString().slice(0, 10));
   await t.app.app.jobs.run();
   assert.ok(!t.stripe.calls.some((x) => x.path === '/v1/payment_intents'));
-  assert.strictEqual(t.db.get('SELECT status FROM subscriptions').status, 'past_due');
+  assert.strictEqual((await t.db.get('SELECT status FROM subscriptions')).status, 'past_due');
 });
 
 test('remboursement par carte : l’enregistrement échoue après paiement -> remboursé chez Stripe (payment_intent), sans intervention manuelle', async () => {
   const t = await withStripe();
   t.state.failRegister = ['neuf.com'];
   const r = await (await checkout(t, {})).json();
-  payAndComplete(t, r);
+  await payAndComplete(t, r);
   const res = await webhook(t, completed(r.reference));
   assert.strictEqual(res.status, 200);
   assert.strictEqual(t.stState.refunds.length, 1);
   assert.match(t.stState.refunds[0].payment_intent, /^pi_cs_/);
-  assert.strictEqual(t.db.get('SELECT status FROM orders').status, 'refunded');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'refunded');
 });
 
 test('carte supprimée par le client : détachée chez Stripe et plus jamais débitée', async () => {
   const t = await withStripe();
-  const r = await (await checkout(t, {})).json(); payAndComplete(t, r); await status(t, r.orderId);
+  const r = await (await checkout(t, {})).json(); await payAndComplete(t, r); await status(t, r.orderId);
   const m = (await (await t.user('/api/payment-methods')).json()).methods[0];
   assert.strictEqual((await t.user('/api/payment-methods/' + m.id, { method: 'DELETE' })).status, 200);
   assert.deepStrictEqual(t.stState.detached, ['pm_card1']);
-  assert.strictEqual(t.db.get("SELECT COUNT(*) AS n FROM payment_methods WHERE type = 'card'").n, 0);
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM payment_methods WHERE type = 'card'")).n, 0);
 });
 
 test('sans clé Stripe : la carte reste indisponible (501) et le webhook n’existe pas ; MonCash intact', async () => {
@@ -182,39 +182,39 @@ test('montant payé inférieur à la commande -> « needs_attention », rien n�
   const alerts = [];
   const t = await withStripe({ deps: { alert: async (...a) => alerts.push(a) } });
   const r = await (await checkout(t, {})).json();
-  const sid = t.db.get('SELECT charge_id FROM orders').charge_id;
+  const sid = (await t.db.get('SELECT charge_id FROM orders')).charge_id;
   Object.assign(t.stState.sessions[sid], { payment_status: 'paid', amount_total: 100 });
   await webhook(t, completed(r.reference));
-  assert.strictEqual(t.db.get('SELECT status FROM orders').status, 'needs_attention');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'needs_attention');
   assert.ok(!t.ns.calls.some((x) => x.op === 'registerDomain'));
   assert.ok(alerts.length >= 1);
 });
 
 async function domainWithCard(t) {
   const r = await (await checkout(t, {})).json();
-  payAndComplete(t, r); await status(t, r.orderId);
-  return t.db.get('SELECT * FROM domains');
+  await payAndComplete(t, r); await status(t, r.orderId);
+  return await t.db.get('SELECT * FROM domains');
 }
-const setExpiry = (t, days) => t.db.run('UPDATE domains SET expires_at = ?', new Date(Date.now() + days * 86400000).toISOString().slice(0, 10));
+const setExpiry = async (t, days) => (await t.db.run('UPDATE domains SET expires_at = ?', new Date(Date.now() + days * 86400000).toISOString().slice(0, 10)));
 const renewCalls = (t) => t.ns.calls.filter((x) => x.op === 'renewDomain').length;
 
 test('domaine : renouvelé automatiquement 7 jours avant l’expiration sur la carte enregistrée, une seule fois, sans rappel ; pas avant', async () => {
   const t = await withStripe();
   const d = await domainWithCard(t);
-  setExpiry(t, 20); t.mailer.sent.length = 0;
+  await setExpiry(t, 20); t.mailer.sent.length = 0;
   await t.app.app.jobs.run();
   assert.strictEqual(renewCalls(t), 0, 'trop tôt : seulement le rappel');
-  setExpiry(t, 6); t.mailer.sent.length = 0;
+  await setExpiry(t, 6); t.mailer.sent.length = 0;
   await t.app.app.jobs.run();
   assert.strictEqual(renewCalls(t), 1);
-  const after = t.db.get('SELECT * FROM domains WHERE id = ?', d.id);
+  const after = await t.db.get('SELECT * FROM domains WHERE id = ?', d.id);
   assert.ok(after.expires_at > new Date(Date.now() + 300 * 86400000).toISOString().slice(0, 10), 'prolongé d’un an');
   assert.ok(!t.mailer.sent.some((m) => /expire/.test(m.subject)), 'aucun rappel d’expiration : déjà renouvelé');
   await t.app.app.jobs.run(); await t.app.app.jobs.run();
   assert.strictEqual(renewCalls(t), 1, 'jamais deux renouvellements');
   const pi = t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').pop();
   assert.strictEqual(pi.f.off_session, 'true');
-  assert.ok(t.db.get("SELECT 1 FROM invoices WHERE label LIKE 'Renouvellement neuf.com%'"));
+  assert.ok(await t.db.get("SELECT 1 FROM invoices WHERE label LIKE 'Renouvellement neuf.com%'"));
 });
 
 test('domaine : carte refusée -> 3 tentatives (7 j, 3 j, 1 j) puis plus rien ; rappels par e-mail conservés', async () => {
@@ -223,7 +223,7 @@ test('domaine : carte refusée -> 3 tentatives (7 j, 3 j, 1 j) puis plus rien ; 
   t.stState.decline = true;
   const tries = () => t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length;
   const base = tries();
-  for (const days of [6, 6, 2, 0, 0, 0]) { setExpiry(t, days); await t.app.app.jobs.run(); }
+  for (const days of [6, 6, 2, 0, 0, 0]) { await setExpiry(t, days); await t.app.app.jobs.run(); }
   assert.strictEqual(tries(), base + 3);
   assert.strictEqual(renewCalls(t), 0);
   assert.ok(t.mailer.sent.some((m) => /expire/.test(m.subject)), 'le client est prévenu par e-mail');
@@ -232,19 +232,19 @@ test('domaine : carte refusée -> 3 tentatives (7 j, 3 j, 1 j) puis plus rien ; 
 test('domaine : renouvellement automatique désactivé par le client, domaine sans carte, domaine dry-run -> aucun prélèvement', async () => {
   const t = await withStripe();
   await domainWithCard(t);
-  setExpiry(t, 2);
-  t.db.run('UPDATE domains SET auto_renew = 0'); await t.app.app.jobs.run();
+  await setExpiry(t, 2);
+  await t.db.run('UPDATE domains SET auto_renew = 0'); await t.app.app.jobs.run();
   assert.strictEqual(renewCalls(t), 0, 'désactivé');
-  t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1'); await t.app.app.jobs.run();
+  await t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1'); await t.app.app.jobs.run();
   assert.strictEqual(renewCalls(t), 0, 'dry-run');
-  t.db.run('UPDATE domains SET dry_run = 0'); t.db.run("DELETE FROM payment_methods"); await t.app.app.jobs.run();
+  await t.db.run('UPDATE domains SET dry_run = 0'); await t.db.run("DELETE FROM payment_methods"); await t.app.app.jobs.run();
   assert.strictEqual(renewCalls(t), 0, 'pas de carte');
 });
 
 test('domaine : un paiement manuel déjà en cours bloque le prélèvement automatique (pas de double paiement)', async () => {
   const t = await withStripe();
   await domainWithCard(t);
-  setExpiry(t, 2);
+  await setExpiry(t, 2);
   assert.strictEqual((await t.user('/api/checkout', { method: 'POST', body: { kind: 'renewal', domain: 'neuf.com', years: 1, method: 'moncash' } })).status, 200);
   const base = t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length;
   await t.app.app.jobs.run();

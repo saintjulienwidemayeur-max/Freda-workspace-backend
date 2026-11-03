@@ -100,7 +100,7 @@ test('achat : codes 301/302 = succès, 252 toléré, coût réel NameSilo enregi
     const t = await setup({ payments: { name: 'test', async create() { return { status: 'paid' }; }, async verify() { return { status: 'paid' }; }, async refund() {} } });
     t.state.registerCode = code; t.state.lockCode = 252;
     assert.strictEqual((await buy(t, { domains: ['neuf.com'] })).status, 200, 'code ' + code);
-    assert.strictEqual(t.db.get('SELECT registrar_cost FROM domains').registrar_cost, 10);
+    assert.strictEqual((await t.db.get('SELECT registrar_cost FROM domains')).registrar_cost, 10);
   }
 });
 
@@ -131,7 +131,7 @@ test('dry-run (défaut) : lectures réelles, mais aucun enregistrement ni verrou
   assert.strictEqual(d.dryRun, true);
   assert.ok(t.ns.calls.some((c) => c.op === 'checkRegisterAvailability'));
   assert.ok(!t.ns.calls.some((c) => ['registerDomain', 'domainLock'].includes(c.op)));
-  assert.strictEqual(t.db.get('SELECT dry_run FROM domains').dry_run, 1);
+  assert.strictEqual((await t.db.get('SELECT dry_run FROM domains')).dry_run, 1);
 });
 
 test('configuration : dry-run par défaut ; démarrage refusé si dangereux', () => {

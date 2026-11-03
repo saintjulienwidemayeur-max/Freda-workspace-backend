@@ -13,8 +13,10 @@ services:
         value: 22
       - key: NODE_ENV
         value: production
-      - key: DB_FILE
-        value: /var/data/freda.db
+      - key: DATABASE_URL
+        sync: false          # Supabase : URI du « Session pooler » (Project Settings > Database > Connection string), avec le mot de passe
+      - key: DATABASE_POOL_MAX
+        value: 8
       - key: APP_URL
         value: https://fredaworkspace.com
       - key: API_URL
@@ -67,7 +69,3 @@ services:
         sync: false
       - key: ALERT_WEBHOOK_URL
         sync: false
-    disk:
-      name: api-data
-      mountPath: /var/data
-      sizeGB: 1

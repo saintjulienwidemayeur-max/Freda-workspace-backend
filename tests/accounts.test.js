@@ -4,7 +4,7 @@ const { setup, closeAll } = require('./helpers');
 const { signJwt } = require('../src/auth');
 test.after(closeAll);
 
-const jwtSetup = () => setup({ env: { AUTH_MODE: 'jwt' } });
+const jwtSetup = async () => (await setup({ env: { AUTH_MODE: 'jwt' } }));
 const post = (t, path, body, headers = {}) => t.api(path, { method: 'POST', body, headers });
 const signup = async (t, over = {}) => (await post(t, '/api/auth/signup', { name: 'Paul Test', email: 'Paul@Example.com', password: 'Motdepasse#2026', ...over })).json();
 
@@ -14,7 +14,7 @@ test('inscription : crée le compte, normalise l’e-mail, hache le mot de passe
   assert.strictEqual(r.status, 200);
   const s = await r.json();
   assert.strictEqual(s.user.email, 'paul@example.com');
-  const row = t.db.get('SELECT password_hash FROM users');
+  const row = await t.db.get('SELECT password_hash FROM users');
   assert.match(row.password_hash, /^scrypt\$/);
   assert.ok(!row.password_hash.includes('Motdepasse'));
   assert.ok(t.mailer.sent.some((m) => /Bienvenue/.test(m.subject)));
@@ -69,7 +69,7 @@ test('profil entreprise : PATCH /me/company enregistre les champs, e-mail de fac
   assert.strictEqual(ok.status, 200);
   const u = await ok.json();
   assert.strictEqual(u.company, 'Atelier Test'); assert.strictEqual(u.taxId, '123-456');
-  assert.strictEqual(t.db.get('SELECT password_hash FROM users').password_hash.startsWith('scrypt$'), true, 'champs sensibles non modifiables');
+  assert.strictEqual((await t.db.get('SELECT password_hash FROM users')).password_hash.startsWith('scrypt$'), true, 'champs sensibles non modifiables');
   assert.strictEqual((await t.api('/api/me/company', { method: 'PATCH', headers: h, body: { billingEmail: 'pas-un-email' } })).status, 400);
 });
 
@@ -97,7 +97,7 @@ test('réinitialisation : réponse identique pour un compte inconnu, jeton à us
   assert.ok((await done.json()).token);
   assert.strictEqual((await post(t, '/api/auth/reset/confirm', { token, password: 'Autre#2026ok' })).status, 400, 'usage unique');
   assert.strictEqual((await post(t, '/api/auth/login', { email: 'paul@example.com', password: 'Reinit#2026ok' })).status, 200);
-  t.db.run('UPDATE password_resets SET used = 0, expires_at = 1');
+  await t.db.run('UPDATE password_resets SET used = 0, expires_at = 1');
   assert.strictEqual((await post(t, '/api/auth/reset/confirm', { token, password: 'Autre#2026ok' })).status, 400, 'expiré');
 });
 
@@ -118,7 +118,7 @@ test('Google OAuth : crée le compte, rattache l’e-mail existant, refuse un é
   // deuxième connexion : même compte
   const again = await t.api(`/api/auth/oauth/google/callback?code=good&state=${new URL((await t.api('/api/auth/oauth/google', { redirect: 'manual' })).headers.get('location')).searchParams.get('state')}`, { redirect: 'manual' });
   assert.doesNotMatch(again.headers.get('location'), /new=1/);
-  assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM users').n, 1);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM users')).n, 1);
   const forged = await t.api('/api/auth/oauth/google/callback?code=good&state=forge', { redirect: 'manual' });
   assert.match(forged.headers.get('location'), /#error=invalid_state/);
   assert.strictEqual((await t.api('/api/auth/oauth/apple', { redirect: 'manual' })).status, 501);
