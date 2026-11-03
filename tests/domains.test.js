@@ -247,7 +247,7 @@ test('prix barré : désactivé par défaut ; avec PRICE_COMPARE_PERCENT il est 
 });
 
 test('recherche en deux temps : « main » = nom + .com/.net/.org en un seul appel NameSilo, « more » = le reste ; .com toujours en tête', async () => {
-  const tlds = '.xyz,.com,.net,.org,.io,.dev,.app,.shop,.club,.cloud,.digital,.agency';
+  const tlds = '.xyz,.shop,.club,.com,.net,.org,.io,.dev,.app,.cloud,.digital,.agency';
   const t = await setup({ env: { DOMAIN_TLDS: tlds } });
   const before = t.ns.calls.length;
   const m = await (await t.api('/api/domains/search?q=rapide&part=main')).json();

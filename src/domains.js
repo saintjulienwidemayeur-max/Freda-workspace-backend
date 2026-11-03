@@ -28,7 +28,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     const primary = n.tld && book[n.tld] ? n.tld : '.com';
     const all = Object.keys(book);
     if (!all.length) throw new HttpError(503, 'Tarifs indisponibles pour le moment.', 'prices_unavailable');
-    const rank = (t) => (t === primary ? -2 : PRIORITY.includes(t) ? PRIORITY.indexOf(t) - 1 : 1);
+    const rank = (t) => (t === primary ? -2 : PRIORITY.includes(t) ? PRIORITY.indexOf(t) - 1 : 3);
     const tlds = all.slice().sort((a, b) => rank(a) - rank(b) || book[a].price - book[b].price);
     const mainTlds = [...new Set([primary, ...PRIORITY.filter((t) => book[t])])];
     const variants = ['get' + n.label, 'mon' + n.label, n.label + 'pro', n.label + 'group'].filter((l) => l.length <= 63);
