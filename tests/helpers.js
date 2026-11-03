@@ -318,9 +318,9 @@ async function setup(over = {}) {
   };
   const cfg = loadConfig(env);
   const cfgMailer = createMailer(cfg, () => {});
-  const dnsState = { mx: {}, txt: {}, ns: {} };
+  const dnsState = { mx: {}, txt: {}, ns: {}, cname: {} };
   const resolve = over.resolve || (async (ip, domain, type) => {
-    const v = (type === 'MX' ? dnsState.mx : type === 'TXT' ? dnsState.txt : dnsState.ns)[domain];
+    const v = (type === 'MX' ? dnsState.mx : type === 'TXT' ? dnsState.txt : type === 'CNAME' ? dnsState.cname : dnsState.ns)[domain];
     if (!v) throw new Error('NXDOMAIN');
     return v;
   });

@@ -112,6 +112,7 @@ function assertSafe(cfg) {
   if (!/^https:\/\/js\.stripe\.com\//.test(cfg.payments.stripe.jsUrl)) errors.push('STRIPE_JS_URL doit commencer par https://js.stripe.com/.');
   if (cfg.payments.stripe.secretKey && !cfg.payments.stripe.webhookSecret) errors.push('STRIPE_WEBHOOK_SECRET (whsec_…) requis avec STRIPE_SECRET_KEY : sans webhook signé, les paiements par carte ne seraient confirmés que par balayage.');
   if (cfg.nodeEnv === 'production' && /^sk_test_/.test(cfg.payments.stripe.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Stripe de TEST avec NAMESILO_MODE=live : les achats réels seraient payés avec de fausses cartes.');
+  if (cfg.nodeEnv === 'production' && cfg.namesilo.mode !== 'live') errors.push('NAMESILO_MODE=live requis en production : en dry-run, les clients paieraient des domaines qui ne sont jamais achetés chez NameSilo.');
   if (cfg.nodeEnv === 'production' && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe de boîte choisis par les clients pendant l’exécution de leur commande.');
   if (cfg.nodeEnv === 'production' && cfg.payments.provider === 'demo') errors.push('PAYMENTS_PROVIDER=demo interdit en production : toute commande serait « payée » sans paiement (boîtes mail réelles gratuites). Utilisez paym (ou NODE_ENV=staging pour une instance d’essai).');
   const { apns, fcm } = cfg.push;

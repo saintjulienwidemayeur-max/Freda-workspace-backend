@@ -192,6 +192,13 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
         if (!mx.some((m) => /purelymail/i.test(m.exchange))) missing.push('MX');
         const txt = (await resolve(ip, d.name, 'TXT').catch(() => [])).map((a) => a.join(''));
         if (!txt.some((t) => t.startsWith('v=spf1') && t.includes('purelymail'))) missing.push('SPF');
+        // DKIM : sans les 3 CNAME, le courrier part mais atterrit en spam ; on ne déclare donc pas le domaine « connecté » avant.
+        let dkimOk = true;
+        for (const r of MAIL_TEMPLATE.filter((x) => x.role === 'DKIM')) {
+          const got = await resolve(ip, r.name + '.' + d.name, 'CNAME').catch(() => []);
+          if (!got.some((g) => String(g).toLowerCase().replace(/\.$/, '') === r.value.toLowerCase())) dkimOk = false;
+        }
+        if (!dkimOk) missing.push('DKIM');
       }
     } catch (e) { if (e instanceof HttpError) throw e; missing.push('DNS'); }
     if (missing.length) return { connected: false, missing };

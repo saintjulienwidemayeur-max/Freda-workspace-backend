@@ -281,7 +281,13 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
           const r = await mail.createBox(o.user_id, { local: p.mailbox.local, domain: p.domain, name: p.mailbox.name, password: chosen });
           initialPassword = r.initialPassword;
           mailboxReady = r.providerReady;
-        } catch (e) { log('warn', 'first_mailbox_failed', { message: e.message }); }
+        } catch (e) {
+          // L'offre est payée et active, mais la boîte n'a pas pu être créée (domaine pas encore vérifié, panne Purelymail…) :
+          // on prévient l'exploitant ET le client, qui crée sa boîte depuis son espace (Emails, « Ajouter une boîte »).
+          log('warn', 'first_mailbox_failed', { message: e.message, code: e.code });
+          await alert('warn', 'Offre payée mais première boîte non créée', { userId: o.user_id, order: o.id, address: p.mailbox.local + '@' + p.domain, reason: e.code || e.message });
+          mailer.trySend({ to: user.email, subject: 'Votre offre est active — finalisez votre boîte mail', text: `Votre offre est bien activée, mais la boîte ${p.mailbox.local}@${p.domain} n'a pas pu être créée automatiquement (${e.code === 'domain_pending_verification' ? 'votre domaine n’est pas encore vérifié : les enregistrements DNS peuvent mettre un peu de temps à se propager' : 'incident temporaire'}).\nVous n'avez rien à repayer : ouvrez votre espace, rubrique Emails, puis « Ajouter une boîte » (${cfg.appUrl}/espace/emails.html).\nSi le problème persiste, répondez à ce message.` });
+        }
       }
     }
     const clean = { ...p, mailbox: p.mailbox ? { local: p.mailbox.local, name: p.mailbox.name } : null };   // le mot de passe chiffré est supprimé dès que la boîte existe

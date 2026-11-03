@@ -91,9 +91,12 @@ test('domaine existant (mode records) : ajout, zone préparée, vérification DN
   assert.ok(!t.ns.calls.some((c2) => c2.op.startsWith('dns')), 'pas d’appel NameSilo pour un domaine externe');
   let v = await j(await t.user('/api/domains/externe.com/verify', { method: 'POST' }));
   assert.strictEqual(v.connected, false);
-  assert.deepStrictEqual(v.missing, ['MX', 'SPF']);
+  assert.deepStrictEqual(v.missing, ['MX', 'SPF', 'DKIM']);
   t.dnsState.mx['externe.com'] = [{ exchange: 'mailserver.purelymail.com', priority: 50 }];
   t.dnsState.txt['externe.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
+  v = await j(await t.user('/api/domains/externe.com/verify', { method: 'POST' }));
+  assert.deepStrictEqual(v.missing, ['DKIM'], 'MX et SPF ne suffisent pas : sans DKIM le courrier finit en spam');
+  for (let i = 1; i <= 3; i++) t.dnsState.cname[`purelymail${i}._domainkey.externe.com`] = [`key${i}.dkimroot.purelymail.com.`];
   v = await j(await t.user('/api/domains/externe.com/verify', { method: 'POST' }));
   assert.strictEqual(v.connected, true);
   assert.strictEqual((await t.db.get('SELECT status FROM domains')).status, 'active');
@@ -120,6 +123,7 @@ test('deux comptes peuvent réclamer le même domaine en attente ; le premier à
   await t.as('autre@example.com')('/api/domains/connect', { method: 'POST', body: { domain: 'partage.com', mode: 'records' } });
   t.dnsState.mx['partage.com'] = [{ exchange: 'mailserver.purelymail.com', priority: 50 }];
   t.dnsState.txt['partage.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
+  for (let i = 1; i <= 3; i++) t.dnsState.cname[`purelymail${i}._domainkey.partage.com`] = [`key${i}.dkimroot.purelymail.com`];
   assert.strictEqual((await j(await t.as('autre@example.com')('/api/domains/partage.com/verify', { method: 'POST' }))).connected, true);
   assert.strictEqual((await t.user('/api/domains/partage.com/verify', { method: 'POST' })).status, 409);
   assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM domains WHERE name = 'partage.com' AND status = 'active'")).n, 1, 'un seul propriétaire actif');
@@ -222,4 +226,18 @@ test('GET /api/invoices et /api/domains : listes réelles (pas des promesses non
   assert.ok(inv.invoices.every((i) => i.id && typeof i.amount === 'number'));
   const dom = await j(await t.user('/api/domains'));
   assert.deepStrictEqual(dom.domains.map((d) => d.name), ['neuf.com']);
+});
+
+test('offre payée mais première boîte impossible à créer : le client et l’exploitant sont prévenus, rien n’est silencieux', async () => {
+  const t = await withDomain();
+  t.pmState.fail = true;
+  const r = await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly', domain: 'neuf.com', mailbox: { local: 'contact' } } });
+  assert.strictEqual(r.status, 200);
+  const o = await t.db.get("SELECT status, payload FROM orders WHERE kind = 'subscription'");
+  assert.strictEqual(o.status, 'completed');
+  assert.strictEqual(JSON.parse(o.payload).mailboxCreated, false);
+  assert.ok(t.mailer.sent.some((m) => /finalisez votre boîte mail/.test(m.subject)), 'e-mail « finalisez votre boîte »');
+  assert.ok(!t.mailer.sent.some((m) => /Votre première boîte mail/.test(m.subject)));
+  t.pmState.fail = false;
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'contact', domain: 'neuf.com' } })).status, 200, 'le client peut créer sa boîte ensuite sans repayer');
 });

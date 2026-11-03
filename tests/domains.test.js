@@ -149,11 +149,12 @@ test('configuration : dry-run par défaut ; démarrage refusé si dangereux', ()
 });
 
 test('configuration de production : paiements « demo » refusés, DATA_KEY et DATABASE_URL obligatoires ; staging toléré', () => {
-  const base = { NAMESILO_API_KEY: 'k', JWT_SECRET: 'j'.repeat(40), AUTH_MODE: 'jwt', MAILER: 'brevo', BREVO_API_KEY: 'b', DATABASE_URL: 'postgresql://u:p@h:5432/db', DATA_KEY: 'a'.repeat(64) };
+  const base = { NAMESILO_API_KEY: 'k', NAMESILO_MODE: 'live', JWT_SECRET: 'j'.repeat(40), AUTH_MODE: 'jwt', MAILER: 'brevo', BREVO_API_KEY: 'b', DATABASE_URL: 'postgresql://u:p@h:5432/db', DATA_KEY: 'a'.repeat(64) };
   const errs = (env) => assertSafe(loadConfig({ ...base, ...env }));
+  assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b', NAMESILO_MODE: 'dry-run' }).some((e) => /NAMESILO_MODE=live requis/.test(e)), 'dry-run interdit en production');
   assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'demo' }).some((e) => /demo.*interdit en production/.test(e)));
   assert.deepStrictEqual(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b' }), []);
-  assert.deepStrictEqual(errs({ NODE_ENV: 'staging', PAYMENTS_PROVIDER: 'demo', MAILER: 'console', DATABASE_URL: '' }), [], 'instance d’essai : paiements fictifs, e-mails en console, base locale');
+  assert.deepStrictEqual(errs({ NODE_ENV: 'staging', PAYMENTS_PROVIDER: 'demo', MAILER: 'console', DATABASE_URL: '', NAMESILO_MODE: 'dry-run' }), [], 'instance d’essai : paiements fictifs, e-mails en console, base locale');
   assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b', DATA_KEY: '' }).some((e) => /DATA_KEY/.test(e)));
   assert.ok(errs({ NODE_ENV: 'production', PAYMENTS_PROVIDER: 'paym', PAYM_CLIENT_ID: 'a', PAYM_CLIENT_SECRET: 'b', DATABASE_URL: '' }).some((e) => /DATABASE_URL/.test(e)));
   assert.ok(errs({ DATABASE_URL: 'mysql://x' }).some((e) => /invalide/.test(e)));
