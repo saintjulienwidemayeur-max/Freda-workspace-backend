@@ -184,3 +184,15 @@ test('recherche : les 36 extensions sont vérifiées par lots de 10 (NameSilo tr
   const checks = t.ns.calls.filter((c) => c.op === 'checkRegisterAvailability');
   assert.ok(checks.length >= 1 && checks.every((c) => c.q.domains.split(',').length <= 10));
 });
+
+test('NameSilo répond 503 une fois : la vérification de disponibilité est réessayée (pas de panne visible)', async () => {
+  const { createClient } = require('../src/namesilo');
+  let n = 0;
+  const fetchImpl = async () => (++n === 1
+    ? { ok: false, status: 503, json: async () => { throw new Error('html'); } }
+    : { ok: true, status: 200, json: async () => ({ reply: { code: 300, available: [{ domain: 'a.com', price: 9, duration: 1 }] } }) });
+  const c = createClient({ baseUrl: 'http://x', key: 'k' }, fetchImpl);
+  const r = await c.checkAvailability(['a.com']);
+  assert.strictEqual(n, 2);
+  assert.strictEqual(r.available[0].domain, 'a.com');
+});

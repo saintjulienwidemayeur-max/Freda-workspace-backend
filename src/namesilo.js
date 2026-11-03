@@ -56,10 +56,15 @@ function createClient(cfg, fetchImpl = fetch) {
       if (domains.length > 10) {
         const parts = [];
         for (let i = 0; i < domains.length; i += 10) parts.push(domains.slice(i, i + 10));
-        const rs = await Promise.all(parts.map((p) => client.checkAvailability(p)));
+        const rs = [];
+        for (const p of parts) rs.push(await client.checkAvailability(p));   // un lot à la fois : en parallèle NameSilo répond 503
         return { available: rs.flatMap((r) => r.available), unavailable: rs.flatMap((r) => r.unavailable), invalid: rs.flatMap((r) => r.invalid) };
       }
-      const reply = await call('checkRegisterAvailability', { domains: domains.join(',') });
+      let reply;
+      for (let attempt = 0; ; attempt++) {   // lecture sans effet de bord : on peut réessayer (NameSilo répond 503 quand il est saturé)
+        try { reply = await call('checkRegisterAvailability', { domains: domains.join(',') }); break; }
+        catch (e) { if (attempt >= 2 || !(e.code === 503 || e.code === 429 || e.code === 'NETWORK')) throw e; await new Promise((r) => setTimeout(r, 700 * (attempt + 1))); }
+      }
       const available = asArray(reply.available).map((d) => (typeof d === 'string' ? { domain: d } : d))
         .map((d) => ({
           domain: String(d.domain).toLowerCase(),
