@@ -10,6 +10,7 @@
  */
 const crypto = require('crypto');
 const { HttpError } = require('./errors');
+const { templates } = require('./mailer');
 
 const LOCAL = /^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
 const id = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
@@ -32,6 +33,8 @@ function createPurelymail(cfg, log) {
     createUser: ({ local, domain, password }) => call('createUser', { userName: local, domainName: domain, password, enablePasswordReset: false, enableSearchIndexing: true, sendWelcomeEmail: false }),
     /** modifyUser : nouveau mot de passe et/ou nouveau nom (renommer change l'identifiant de connexion IMAP/SMTP/webmail, donc invalide aussi les mots de passe d'application). */
     modifyUser: ({ local, domain, newLocal, password }) => call('modifyUser', { userName: `${local}@${domain}`, ...(newLocal ? { newUserName: `${newLocal}@${domain}` } : {}), ...(password ? { newPassword: password } : {}) }),
+    createAppPassword: async ({ local, domain, name }) => String((await call('createAppPassword', { userHandle: `${local}@${domain}`, name })).appPassword || ''),
+    deleteAppPassword: ({ local, domain, appPassword }) => call('deleteAppPassword', { userName: `${local}@${domain}`, appPassword }),
     async findRules({ domain, local, target }) {
       const rules = (await call('listRoutingRules', {})).rules || [];
       return rules.filter((r) => String(r.domainName).toLowerCase() === domain && r.matchUser === local && !r.prefix && !r.catchall && (!target || (r.targetAddresses || []).includes(target)));
@@ -48,7 +51,7 @@ function createPurelymail(cfg, log) {
   };
 }
 
-function createMail({ cfg, db, log, provider, dns }) {
+function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   const pm = provider || createPurelymail(cfg, log);
   const box = (r) => ({ id: r.id, address: r.address, name: r.name, usedGb: r.used_gb, created: r.created_at.slice(0, 10), lastLogin: r.last_login ? r.last_login.slice(0, 10) : null, role: r.role, status: r.provider_status });
   const alias = (r) => ({ id: r.id, from: r.from_addr, to: r.to_addr });
@@ -112,6 +115,7 @@ function createMail({ cfg, db, log, provider, dns }) {
       if (b.provider_user) await dropSuspendRules(b, b.provider_user);
       await pm.deleteUser({ local: providerLocal(b), domain: b.domain });
     }
+    db.run('DELETE FROM devices WHERE mailbox_id = ?', b.id);   // les mots de passe d'application disparaissent avec l'utilisateur
     db.tx(() => {
       for (const a of db.all('SELECT * FROM aliases WHERE user_id = ? AND to_addr = ?', userId, b.address)) db.run('DELETE FROM aliases WHERE id = ?', a.id);
       db.run('DELETE FROM mailboxes WHERE id = ?', b.id);
@@ -208,7 +212,52 @@ function createMail({ cfg, db, log, provider, dns }) {
     return { failed };
   }
 
-  return { listBoxes, listAliases, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
+  /* ---------- Appareils (applications mobiles iPhone / Android) ---------- */
+  /** Réglages IMAP / SMTP publiés par Purelymail (https://purelymail.com/docs/setup/technical). */
+  const connection = () => ({
+    imap: { host: 'imap.purelymail.com', port: 993, security: 'ssl' },
+    smtp: { host: 'smtp.purelymail.com', port: 465, security: 'ssl', alternative: { port: 587, security: 'starttls' } },
+  });
+  const device = (r, address) => ({ id: r.id, name: r.name, platform: r.platform, mailbox: address, created: r.created_at.slice(0, 10) });
+  const listDevices = (userId) => db.all('SELECT d.*, m.address FROM devices d JOIN mailboxes m ON m.id = d.mailbox_id WHERE d.user_id = ? ORDER BY d.created_at', userId).map((r) => device(r, r.address));
+
+  /**
+   * Autorise un appareil : crée un mot de passe d'application PROPRE à cet appareil (jamais le mot de passe de la boîte). Il n'est renvoyé qu'ICI, une seule fois ;
+   * l'application le range dans le Keychain (iOS) / Keystore (Android). Chiffré côté serveur uniquement pour pouvoir le révoquer.
+   * Boîte suspendue : refusé (le renommage de la suspension rend de toute façon les anciens appareils inutilisables ; ils refonctionnent à la réactivation).
+   */
+  async function addDevice(userId, boxId, { name, platform } = {}) {
+    const b = db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
+    if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
+    subscription(userId);
+    if (b.provider_status === 'suspended') throw new HttpError(409, 'Cette boîte est suspendue : réglez votre offre pour la réactiver.', 'mailbox_suspended');
+    if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
+    const label = String(name || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+    if (label.length < 1) throw new HttpError(400, 'Donnez un nom à cet appareil (ex. « iPhone de Claire »).', 'invalid_device');
+    const plat = ['ios', 'android'].includes(platform) ? platform : 'other';
+    if (db.get('SELECT COUNT(*) AS n FROM devices WHERE mailbox_id = ?', b.id).n >= cfg.maxDevicesPerMailbox) throw new HttpError(403, `Limite de ${cfg.maxDevicesPerMailbox} appareils par boîte atteinte. Retirez-en un.`, 'device_limit');
+    const appPassword = await pm.createAppPassword({ local: b.local_part, domain: b.domain, name: `Freda · ${label}` });
+    if (!appPassword) throw new HttpError(502, 'Le serveur de messagerie n’a pas fourni de mot de passe d’appareil. Réessayez.', 'mail_provider_error');
+    const did = id('dev');
+    db.run('INSERT INTO devices (id, user_id, mailbox_id, name, platform, secret_enc, created_at) VALUES (?,?,?,?,?,?,?)', did, userId, b.id, label, plat, vault.encrypt(appPassword), new Date().toISOString());
+    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'smartphone', `Appareil « ${label} » autorisé sur ${b.address}`, now());
+    const u = db.get('SELECT * FROM users WHERE id = ?', userId);
+    if (mailer) mailer.trySend({ to: u.email, ...templates.deviceAdded(u, b.address, label, `${cfg.appUrl}/espace/emails.html`) });
+    return { device: device(db.get('SELECT * FROM devices WHERE id = ?', did), b.address), credentials: { address: b.address, username: b.address, appPassword, ...connection() } };
+  }
+
+  /** Retire un appareil : son mot de passe d'application est supprimé chez Purelymail (l'appareil perd l'accès immédiatement). */
+  async function removeDevice(userId, deviceId) {
+    const d = db.get('SELECT * FROM devices WHERE id = ? AND user_id = ?', String(deviceId), userId);
+    if (!d) throw new HttpError(404, 'Appareil introuvable.', 'not_found');
+    const b = db.get('SELECT * FROM mailboxes WHERE id = ?', d.mailbox_id);
+    if (pm.enabled && b) await pm.deleteAppPassword({ local: providerLocal(b), domain: b.domain, appPassword: vault.decrypt(d.secret_enc) });
+    db.run('DELETE FROM devices WHERE id = ?', d.id);
+    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'smartphone', `Appareil « ${d.name} » retiré`, now());
+    return { ok: true };
+  }
+
+  return { listBoxes, listAliases, listDevices, addDevice, removeDevice, connection, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };

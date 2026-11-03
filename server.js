@@ -13,6 +13,7 @@ const { createAccounts } = require('./src/accounts');
 const { createDomainCatalog } = require('./src/domains');
 const { createDns } = require('./src/dns');
 const { createMail } = require('./src/mail');
+const { createVault } = require('./src/vault');
 const { createSubscription } = require('./src/subscription');
 const { verifySignature } = require('./src/stripe');
 const { createOrders } = require('./src/orders');
@@ -48,7 +49,7 @@ function createApp(deps) {
   const catalog = createDomainCatalog({ cfg, registrar, priceBook, alert, log: logger });
   const accounts = createAccounts({ cfg, db, mailer, log: logger });
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
-  const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider, dns });
+  const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider, dns, vault: createVault(cfg), mailer });
   const orders = createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger });
   const subscription = createSubscription({ cfg, db, mailer });
   const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger });
@@ -144,6 +145,10 @@ function createApp(deps) {
   /* ----- Freda Mail ----- */
   route('GET', '/api/mailboxes', async (c) => ({ mailboxes: mail.listBoxes(c.user.id), aliases: mail.listAliases(c.user.id) }), auth);
   route('POST', '/api/mailboxes', async (c) => { limit(L.write, c.user.id); return mail.createBox(c.user.id, await c.body()); }, auth);
+  route('GET', '/api/mail/config', async () => mail.connection(), auth);
+  route('GET', '/api/devices', async (c) => ({ devices: mail.listDevices(c.user.id) }), auth);
+  route('POST', '/api/mailboxes/:id/devices', async (c, p) => { limit(L.write, c.user.id); return mail.addDevice(c.user.id, p[0], await c.body(4096)); }, auth);
+  route('DELETE', '/api/devices/:id', async (c, p) => { limit(L.write, c.user.id); return mail.removeDevice(c.user.id, p[0]); }, auth);
   route('DELETE', '/api/mailboxes/:id', async (c, p) => mail.removeBox(c.user.id, p[0]), auth);
   route('POST', '/api/aliases', async (c) => mail.addAlias(c.user.id, await c.body()), auth);
   route('DELETE', '/api/aliases/:id', async (c, p) => mail.removeAlias(c.user.id, p[0]), auth);

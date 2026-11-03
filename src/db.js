@@ -76,6 +76,15 @@ const MIGRATIONS = [
   ALTER TABLE mailboxes ADD COLUMN provider_user TEXT NOT NULL DEFAULT '';
   ALTER TABLE mailboxes ADD COLUMN rule_state TEXT NOT NULL DEFAULT '';
   `,
+  /* 5 — appareils (applications mobiles) : un mot de passe d'application Purelymail par appareil, chiffré (nécessaire pour le révoquer) */
+  `
+  CREATE TABLE devices (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), mailbox_id TEXT NOT NULL REFERENCES mailboxes(id),
+    name TEXT NOT NULL, platform TEXT NOT NULL DEFAULT '', secret_enc TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  CREATE INDEX devices_user ON devices(user_id);
+  CREATE INDEX devices_mailbox ON devices(mailbox_id);
+  `,
 ];
 
 function openDb(file) {
