@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 111 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 103 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -33,7 +33,7 @@ Parcours : le client choisit **le mot de passe de sa boîte** sur la plateforme 
 3. Mot de passe oublié / changé : le titulaire du compte Freda utilise `POST /api/mailboxes/:id/password` `{ "password" }` (10–128 caractères) depuis son espace ; l'app redemande alors le nouveau mot de passe.
 
 Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-mail, jamais stocké** : validé avant le paiement, gardé chiffré (AES-256-GCM, `DATA_KEY`) le temps de la commande puis supprimé (aussi purgé si la commande échoue). Suspension : la boîte est renommée, **le mot de passe n'est pas touché** ; à la réactivation le client retrouve exactement ses identifiants, rien à ressaisir.
-Optionnel : `POST /api/mailboxes/:id/devices` crée un mot de passe d'application par appareil (révocable, `DELETE /api/devices/:id`) pour qui préfère ne pas conserver le mot de passe principal sur le téléphone ; non utilisé par le parcours ci-dessus. **Pas de notifications push** : Apple a cassé IMAP IDLE et Purelymail n'a pas le certificat Apple ; un service push (IMAP IDLE côté serveur + APNs/FCM) reste à construire, et il faudra alors un jeton de session pour l'app.
+**Pas de notifications push** : Apple a cassé IMAP IDLE et Purelymail n'a pas le certificat Apple ; un service push (IMAP IDLE côté serveur + APNs/FCM) reste à construire, et il faudra alors un jeton de session pour l'app.
 
 ## Sécurité
 - **Dry-run par défaut** : lectures NameSilo réelles, mais enregistrement/renouvellement/verrouillage/DNS **simulés**. Seule la valeur exacte `NAMESILO_MODE=live` achète pour de vrai.

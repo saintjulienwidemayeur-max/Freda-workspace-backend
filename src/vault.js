@@ -1,6 +1,5 @@
 /**
- * Chiffrement des secrets conservés côté serveur (mots de passe d'application des appareils : il faut pouvoir les REVOQUER chez Purelymail,
- * ce qui exige leur valeur en clair). AES-256-GCM, clé DATA_KEY (32 octets en base64 ou hexadécimal). Hors production, une clé de développement
+ * Chiffrement des secrets conservés côté serveur (mot de passe de boîte choisi par le client, gardé le temps que sa commande soit exécutée puis supprimé). AES-256-GCM, clé DATA_KEY (32 octets en base64 ou hexadécimal). Hors production, une clé de développement
  * est dérivée de JWT_SECRET ; en production DATA_KEY est obligatoire (voir assertSafe). Format : v1.<iv>.<tag>.<chiffré> (base64url).
  */
 const crypto = require('crypto');

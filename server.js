@@ -150,9 +150,6 @@ function createApp(deps) {
   /* Connexion de l'application mobile : adresse pro + mot de passe de la boîte (public, limité par IP et par adresse) */
   route('POST', '/api/mail/login', async (c) => { limit(L.auth, c.ip); return mail.appLogin(await c.body(2048)); });
   route('POST', '/api/mailboxes/:id/password', async (c, p) => { limit(L.auth, c.user.id); return mail.changePassword(c.user.id, p[0], (await c.body(2048)).password); }, auth);
-  route('GET', '/api/devices', async (c) => ({ devices: mail.listDevices(c.user.id) }), auth);
-  route('POST', '/api/mailboxes/:id/devices', async (c, p) => { limit(L.write, c.user.id); return mail.addDevice(c.user.id, p[0], await c.body(4096)); }, auth);
-  route('DELETE', '/api/devices/:id', async (c, p) => { limit(L.write, c.user.id); return mail.removeDevice(c.user.id, p[0]); }, auth);
   route('DELETE', '/api/mailboxes/:id', async (c, p) => mail.removeBox(c.user.id, p[0]), auth);
   route('POST', '/api/aliases', async (c) => mail.addAlias(c.user.id, await c.body()), auth);
   route('DELETE', '/api/aliases/:id', async (c, p) => mail.removeAlias(c.user.id, p[0]), auth);

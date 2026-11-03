@@ -127,18 +127,6 @@ async function fakePurelymail(state) {
         }
         if (b.newPassword) state.passwords[b.newUserName || b.userName] = b.newPassword;
         return json(res, 200, { type: 'success', result: {} });
-      case 'createAppPassword': {
-        if (!str(b.userHandle) || !b.userHandle.includes('@')) return bad(res, 'createAppPassword: userHandle = adresse complète');
-        if (!state.users.includes(b.userHandle)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user' });
-        state.appSeq = (state.appSeq || 0) + 1; const pw = `app-pw-${state.appSeq}-${'x'.repeat(8)}`;
-        (state.appPasswords[b.userHandle] = state.appPasswords[b.userHandle] || []).push(pw);
-        return json(res, 200, { type: 'success', result: { appPassword: pw } });
-      }
-      case 'deleteAppPassword': {
-        const list = state.appPasswords[b.userName] || [];
-        if (!str(b.userName) || !list.includes(b.appPassword)) return json(res, 200, { type: 'error', code: 'notFound', message: 'unknown app password' });
-        state.appPasswords[b.userName] = list.filter((x) => x !== b.appPassword); return json(res, 200, { type: 'success', result: {} });
-      }
       case 'deleteUser':
         if (!str(b.userName) || !b.userName.includes('@')) return bad(res, 'deleteUser: userName = adresse complète');
         if (!state.users.includes(b.userName)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user' });

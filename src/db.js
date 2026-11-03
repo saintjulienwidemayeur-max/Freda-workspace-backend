@@ -85,6 +85,10 @@ const MIGRATIONS = [
   CREATE INDEX devices_user ON devices(user_id);
   CREATE INDEX devices_mailbox ON devices(mailbox_id);
   `,
+  /* 6 — fonctionnalité « appareils » retirée : la connexion de l'app se fait avec l'adresse pro + le mot de passe de la boîte */
+  `
+  DROP TABLE IF EXISTS devices;
+  `,
 ];
 
 function openDb(file) {

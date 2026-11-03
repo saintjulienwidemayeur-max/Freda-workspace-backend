@@ -52,7 +52,6 @@ function loadConfig(env = process.env) {
     },
     dataKey: env.DATA_KEY || '',
     imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
-    maxDevicesPerMailbox: Number(env.MAX_DEVICES_PER_MAILBOX) || 10,
     purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0', suspendMode: env.MAIL_SUSPEND_MODE === 'password' ? 'password' : 'rename' },
     dns: { resolvers: list(env.DNS_RESOLVERS, '8.8.8.8,1.1.1.1,9.9.9.9,208.67.222.222') },
     renewals: { enabled: bool(env.RENEWALS_ENABLED, true), daysBefore: Number(env.RENEWAL_DAYS_BEFORE) || 30, intervalMs: Number(env.JOBS_INTERVAL_MS) || 6 * 3600 * 1000 },
@@ -71,7 +70,7 @@ function assertSafe(cfg) {
   if (cfg.payments.stripe.secretKey && !/^(sk|rk)_(test|live)_/.test(cfg.payments.stripe.secretKey)) errors.push('STRIPE_SECRET_KEY invalide (attendu sk_test_… ou sk_live_…).');
   if (cfg.payments.stripe.secretKey && !cfg.payments.stripe.webhookSecret) errors.push('STRIPE_WEBHOOK_SECRET (whsec_…) requis avec STRIPE_SECRET_KEY : sans webhook signé, les paiements par carte ne seraient confirmés que par balayage.');
   if (cfg.nodeEnv === 'production' && /^sk_test_/.test(cfg.payments.stripe.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Stripe de TEST avec NAMESILO_MODE=live : les achats réels seraient payés avec de fausses cartes.');
-  if (cfg.nodeEnv === 'production' && cfg.purelymail.apiKey && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe d’application des appareils.');
+  if (cfg.nodeEnv === 'production' && cfg.purelymail.apiKey && !cfg.dataKey) errors.push('DATA_KEY (32 octets) requise en production : elle chiffre les mots de passe de boîte choisis par les clients pendant l’exécution de leur commande.');
   if (cfg.mailer.provider === 'brevo' && !cfg.mailer.brevoKey) errors.push('BREVO_API_KEY requise avec MAILER=brevo.');
   if (cfg.nodeEnv === 'production' && cfg.mailer.provider === 'console') errors.push('MAILER=console en production : aucun e-mail (reçus, réinitialisation de mot de passe) ne partirait.');
   if (cfg.namesilo.nameservers.length === 1) errors.push('NAMESERVERS doit contenir au moins 2 serveurs (règle NameSilo).');
