@@ -11,30 +11,48 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
   /* Vendable : pas premium (prix imprévisible) et enregistrable pour 1 an (certaines extensions imposent une durée minimale > 1). */
   const sellable = (d) => !d.premium;   // NameSilo renvoie duration=10 (durée maximale) pour tous les domaines : ce n'est pas la durée minimale, on ne filtre pas dessus
 
-  /** GET /domains/search?q= — forme attendue par assets/js/api.js. */
-  async function search(q) {
+  /* Extensions affichées en premier (dans cet ordre) ; les autres suivent, du moins cher au plus cher. */
+  const PRIORITY = ['.com', '.net', '.org'];
+
+  /**
+   * GET /domains/search?q=[&part=main|more] — forme attendue par assets/js/api.js.
+   *  part=main : le nom demandé + .com/.net/.org (un seul appel NameSilo, rapide) ;
+   *  part=more : toutes les autres extensions + idées de noms (plusieurs lots, plus lent) ;
+   *  sans part : tout, comme avant.
+   */
+  async function search(q, part) {
+    if (part !== undefined && part !== null && !['main', 'more'].includes(part)) throw new HttpError(400, 'Paramètre part invalide.', 'invalid_query');
     const n = normalizeQuery(q, cfg.tlds);
     if (n.error) throw new HttpError(400, n.error, 'invalid_query');
     const book = await loadBook();
     const primary = n.tld && book[n.tld] ? n.tld : '.com';
-    const tlds = Object.keys(book);
-    if (!tlds.length) throw new HttpError(503, 'Tarifs indisponibles pour le moment.', 'prices_unavailable');
+    const all = Object.keys(book);
+    if (!all.length) throw new HttpError(503, 'Tarifs indisponibles pour le moment.', 'prices_unavailable');
+    const rank = (t) => (t === primary ? -2 : PRIORITY.includes(t) ? PRIORITY.indexOf(t) - 1 : 1);
+    const tlds = all.slice().sort((a, b) => rank(a) - rank(b) || book[a].price - book[b].price);
+    const mainTlds = [...new Set([primary, ...PRIORITY.filter((t) => book[t])])];
     const variants = ['get' + n.label, 'mon' + n.label, n.label + 'pro', n.label + 'group'].filter((l) => l.length <= 63);
-    const candidates = [...new Set([...tlds.map((t) => n.label + t), ...variants.map((l) => l + '.com')])];
-    let avail;
-    try { avail = await registrar.checkAvailability(candidates); }
-    catch (e) { log('error', 'search_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
+    const wantTlds = part === 'main' ? mainTlds : part === 'more' ? tlds.filter((t) => !mainTlds.includes(t)) : tlds;
+    const wantVariants = part === 'main' ? [] : variants;
+    const candidates = [...new Set([...wantTlds.map((t) => n.label + t), ...wantVariants.map((l) => l + '.com')])];
+    let avail = { available: [], unavailable: [], invalid: [] };
+    if (candidates.length) {
+      try { avail = await registrar.checkAvailability(candidates); }
+      catch (e) { log('error', 'search_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
+    }
     const free = new Map(avail.available.filter(sellable).map((d) => [d.domain, d]));
     const exactName = n.label + primary, got = avail.available.find((d) => d.domain === exactName);
-    log('info', 'search_done', { exact: exactName, asked: candidates.length, available: avail.available.length, unavailable: avail.unavailable.length, invalid: avail.invalid.length, exactStatus: got ? (sellable(got) ? 'free' : 'filtered') : avail.unavailable.includes(exactName) ? 'taken' : avail.invalid.includes(exactName) ? 'invalid' : 'absent', exactPremium: got ? got.premium : undefined, exactDuration: got ? got.duration : undefined });
+    if (part !== 'more') log('info', 'search_done', { part: part || 'all', exact: exactName, asked: candidates.length, available: avail.available.length, unavailable: avail.unavailable.length, invalid: avail.invalid.length, exactStatus: got ? (sellable(got) ? 'free' : 'filtered') : avail.unavailable.includes(exactName) ? 'taken' : avail.invalid.includes(exactName) ? 'invalid' : 'absent', exactPremium: got ? got.premium : undefined, exactDuration: got ? got.duration : undefined });
     const toResult = (label, tld) => {
       const p = book[tld] || book['.com'];
       return { domain: label + tld, label, tld, available: free.has(label + tld), price: p.price, compare: p.compare || undefined, renew: p.renew, included: false };
     };
-    const exact = toResult(n.label, primary);
-    const results = tlds.filter((t) => t !== primary).map((t) => toResult(n.label, t));
-    const suggestions = variants.map((l) => toResult(l, '.com')).filter((r) => r.available && book['.com']).slice(0, 4);
-    return { query: n.label, unknownTld: n.unknownTld, exact, results, suggestions };
+    const results = wantTlds.filter((t) => t !== primary).map((t) => toResult(n.label, t));
+    const suggestions = wantVariants.length ? variants.map((l) => toResult(l, '.com')).filter((r) => r.available && book['.com']).slice(0, 4) : [];
+    const out = { query: n.label, unknownTld: n.unknownTld, results, suggestions };
+    if (part !== 'more') out.exact = toResult(n.label, primary);
+    if (part === 'main') out.partial = true;
+    return out;
   }
 
   /** Devis d'achat : revérifie la disponibilité, calcule le prix côté serveur, contrôle le solde du compte NameSilo. */

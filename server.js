@@ -74,7 +74,7 @@ function createApp(deps) {
     return { ok: true, database: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled, cards: !!payments.cards };
   });
   route('GET', '/api/domains/prices', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.prices(); });
-  route('GET', '/api/domains/search', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.search(c.url.searchParams.get('q')); });
+  route('GET', '/api/domains/search', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.search(c.url.searchParams.get('q'), c.url.searchParams.get('part')); });
   route('POST', '/api/auth/signup', async (c) => { limit(L.auth, c.ip); return await accounts.signup(await c.body()); });
   route('POST', '/api/auth/login', async (c) => { limit(L.auth, c.ip); return await accounts.login(await c.body(), c.ip); });
   route('POST', '/api/auth/reset', async (c) => { limit(L.auth, c.ip); return await accounts.requestReset((await c.body()).email); });

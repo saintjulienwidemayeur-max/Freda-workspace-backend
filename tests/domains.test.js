@@ -245,3 +245,24 @@ test('prix barré : désactivé par défaut ; avec PRICE_COMPARE_PERCENT il est 
   const d = await (await buy(t, { domains: ['barre.com'] })).json();
   assert.strictEqual(d.amount, s.exact.price, 'on facture le prix de vente, jamais le prix barré');
 });
+
+test('recherche en deux temps : « main » = nom + .com/.net/.org en un seul appel NameSilo, « more » = le reste ; .com toujours en tête', async () => {
+  const tlds = '.xyz,.com,.net,.org,.io,.dev,.app,.shop,.club,.cloud,.digital,.agency';
+  const t = await setup({ env: { DOMAIN_TLDS: tlds } });
+  const before = t.ns.calls.length;
+  const m = await (await t.api('/api/domains/search?q=rapide&part=main')).json();
+  const mainCalls = t.ns.calls.slice(before).filter((c) => c.op === 'checkRegisterAvailability');
+  assert.strictEqual(mainCalls.length, 1, 'un seul appel de disponibilité');
+  assert.deepStrictEqual(mainCalls[0].q.domains.split(','), ['rapide.com', 'rapide.net', 'rapide.org']);
+  assert.strictEqual(m.exact.domain, 'rapide.com'); assert.strictEqual(m.partial, true);
+  assert.deepStrictEqual(m.results.map((r) => r.tld), ['.net', '.org']);
+  const more = await (await t.api('/api/domains/search?q=rapide&part=more')).json();
+  assert.strictEqual(more.exact, undefined);
+  assert.ok(!more.results.some((r) => ['.com', '.net', '.org'].includes(r.tld)));
+  const all = await (await t.api('/api/domains/search?q=rapide')).json();
+  assert.deepStrictEqual(all.results.slice(0, 2).map((r) => r.tld), ['.net', '.org'], '.com, .net, .org avant les autres');
+  assert.strictEqual(all.results.length + 1, m.results.length + more.results.length + 1);
+  assert.strictEqual((await t.api('/api/domains/search?q=rapide&part=zzz')).status, 400);
+  const dev = await (await t.api('/api/domains/search?q=rapide.io&part=main')).json();
+  assert.strictEqual(dev.exact.domain, 'rapide.io', 'l’extension demandée passe en premier');
+});
