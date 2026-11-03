@@ -47,11 +47,18 @@ function createClient(cfg, fetchImpl = fetch) {
     return reply;
   }
 
-  return {
+  const client = {
     call,
 
     /** Disponibilité de plusieurs domaines à la fois (checkRegisterAvailability, 200 maximum). */
     async checkAvailability(domains) {
+      // NameSilo vérifie les noms un par un : un gros lot dépasse le délai. Lots de 10 en parallèle, résultats fusionnés.
+      if (domains.length > 10) {
+        const parts = [];
+        for (let i = 0; i < domains.length; i += 10) parts.push(domains.slice(i, i + 10));
+        const rs = await Promise.all(parts.map((p) => client.checkAvailability(p)));
+        return { available: rs.flatMap((r) => r.available), unavailable: rs.flatMap((r) => r.unavailable), invalid: rs.flatMap((r) => r.invalid) };
+      }
       const reply = await call('checkRegisterAvailability', { domains: domains.join(',') });
       const available = asArray(reply.available).map((d) => (typeof d === 'string' ? { domain: d } : d))
         .map((d) => ({
@@ -157,6 +164,7 @@ function createClient(cfg, fetchImpl = fetch) {
       return asArray(r.email).map((x) => ({ email: x.email_address, domains: Number(x.domains), verified: String(x.verified).toLowerCase() === 'yes' }));
     },
   };
+  return client;
 }
 
 module.exports = { createClient, NameSiloError };

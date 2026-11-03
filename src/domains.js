@@ -23,7 +23,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     const candidates = [...new Set([...tlds.map((t) => n.label + t), ...variants.map((l) => l + '.com')])];
     let avail;
     try { avail = await registrar.checkAvailability(candidates); }
-    catch (e) { log('error', 'search_failed', { code: e.code }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
+    catch (e) { log('error', 'search_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
     const free = new Map(avail.available.filter(sellable).map((d) => [d.domain, d]));
     const toResult = (label, tld) => {
       const p = book[tld] || book['.com'];
@@ -44,7 +44,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     if (parsed.some((p) => !p)) throw new HttpError(400, 'Un des noms de domaine est invalide ou son extension n’est pas proposée.', 'invalid_domain');
     let avail;
     try { avail = await registrar.checkAvailability(parsed.map((p) => p.domain)); }
-    catch (e) { log('error', 'availability_failed', { code: e.code }); throw new HttpError(502, 'Le registraire ne répond pas. Aucun paiement n’a été effectué.', 'registrar_error'); }
+    catch (e) { log('error', 'availability_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'Le registraire ne répond pas. Aucun paiement n’a été effectué.', 'registrar_error'); }
     const ok = new Set(avail.available.filter(sellable).map((d) => d.domain));
     const unavailable = parsed.filter((p) => !ok.has(p.domain)).map((p) => p.domain);
     if (unavailable.length) throw new HttpError(409, 'Domaine indisponible : ' + unavailable.join(', '), 'domain_unavailable');

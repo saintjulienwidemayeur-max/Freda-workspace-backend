@@ -175,3 +175,12 @@ test('rezime de démarrage : uniquement des booléens et des réglages non secre
   const empty = integrationSummary(loadConfig({}));
   assert.deepStrictEqual([empty.jwtSecret, empty.namesilo, empty.stripeSecretKey, empty.purelymail, empty.alertWebhook, empty.paym], Array(6).fill(false));
 });
+
+test('recherche : les 36 extensions sont vérifiées par lots de 10 (NameSilo trop lent sur un gros lot)', async () => {
+  const tlds = '.com,.net,.org,.io,' + Array.from({ length: 30 }, (_, i) => '.x' + i).join(',');
+  const t = await setup({ env: { DOMAIN_TLDS: tlds } });
+  const r = await t.api('/api/domains/search?q=widemayeur');
+  assert.strictEqual(r.status, 200);
+  const checks = t.ns.calls.filter((c) => c.op === 'checkRegisterAvailability');
+  assert.ok(checks.length >= 1 && checks.every((c) => c.q.domains.split(',').length <= 10));
+});
