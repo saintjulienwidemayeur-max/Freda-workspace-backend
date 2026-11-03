@@ -151,6 +151,15 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     return { found: true, status: o.status };
   }
 
+  /** Échec définitif signalé par le fournisseur (ex. moyen de paiement différé refusé). Ne touche jamais une commande déjà exécutée. */
+  async function failByReference(reference, reason) {
+    const o = await db.get('SELECT * FROM orders WHERE reference = ?', String(reference || ''));
+    if (!o) return { found: false };
+    if (!['awaiting_payment', 'expired'].includes(o.status)) return { found: true, status: o.status };
+    await setOrder(o.id, { status: 'payment_failed', error: reason || 'Le paiement n’a pas abouti.' });
+    return { found: true, status: 'payment_failed' };
+  }
+
   async function status(userId, orderId) {
     let o = await db.get('SELECT * FROM orders WHERE id = ? AND user_id = ?', String(orderId), userId);
     if (!o) throw new HttpError(404, 'Commande introuvable.', 'not_found');
@@ -295,7 +304,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
   }
 
-  return { create, status, sweep, fulfill, summarize, planAmount, confirmByReference, cardsEnabled: !!payments.cards };
+  return { create, status, sweep, fulfill, summarize, planAmount, confirmByReference, failByReference, cardsEnabled: !!payments.cards };
 }
 
 module.exports = { createOrders };

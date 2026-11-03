@@ -214,3 +214,12 @@ test('domaine : verrouillage, rappels, code de transfert (EPP) -> demande + aler
   await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'externe.com' } });
   assert.strictEqual((await t.user('/api/domains/externe.com', { method: 'PATCH', body: { locked: true } })).status, 400);
 });
+
+test('GET /api/invoices et /api/domains : listes réelles (pas des promesses non attendues)', async () => {
+  const t = await withMail();
+  const inv = await j(await t.user('/api/invoices'));
+  assert.ok(Array.isArray(inv.invoices) && inv.invoices.length >= 2, 'factures du domaine et de l’offre');
+  assert.ok(inv.invoices.every((i) => i.id && typeof i.amount === 'number'));
+  const dom = await j(await t.user('/api/domains'));
+  assert.deepStrictEqual(dom.domains.map((d) => d.name), ['neuf.com']);
+});

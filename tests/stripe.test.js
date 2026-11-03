@@ -21,7 +21,9 @@ test('carte : Checkout hébergé avec carte enregistrée pour plus tard, montant
   assert.match(r.redirectUrl, /^https:\/\/checkout\.stripe\.test\/cs_/);
   const c = t.stripe.calls.find((x) => x.path === '/v1/checkout/sessions');
   assert.strictEqual(c.f['line_items[0][price_data][unit_amount]'], '1299', 'prix serveur (12,99 $) en cents, pas le 0,01 du navigateur');
-  assert.strictEqual(c.f['payment_intent_data[setup_future_usage]'], 'off_session');
+  assert.strictEqual(c.f['payment_method_options[card][setup_future_usage]'], 'off_session', 'seule la carte est enregistrée pour les prélèvements');
+  assert.ok(!Object.keys(c.f).some((k) => k.startsWith('payment_method_types')), 'aucune liste figée : Checkout propose tous les moyens activés au Dashboard');
+  assert.ok(!('payment_method_configuration' in c.f), 'configuration par défaut du compte');
   assert.strictEqual(c.idem, 'cs-' + r.reference, 'clé d’idempotence = référence');
   assert.ok(c.f.success_url.includes('payment=success') && c.f.success_url.includes('order=' + r.orderId), 'retour Stripe : la page sait quelle commande confirmer');
   assert.ok(c.f.cancel_url.includes('payment=cancelled') && c.f.cancel_url.includes('order=' + r.orderId));
@@ -249,4 +251,44 @@ test('domaine : un paiement manuel déjà en cours bloque le prélèvement autom
   const base = t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length;
   await t.app.app.jobs.run();
   assert.strictEqual(t.stripe.calls.filter((x) => x.path === '/v1/payment_intents').length, base);
+});
+
+test('tous les moyens de paiement : un moyen sans carte (PayPal, virement…) exécute la commande sans enregistrer de carte, sans erreur', async () => {
+  const t = await withStripe();
+  t.stState.noCard = true;
+  const r = await (await checkout(t, {})).json();
+  payAndComplete(t, r);
+  assert.strictEqual((await webhook(t, completed(r.reference))).status, 200);
+  assert.strictEqual((await status(t, r.orderId)).status, 'succeeded');
+  assert.strictEqual((await t.db.get("SELECT COUNT(*) AS n FROM payment_methods WHERE type = 'card'")).n, 0, 'rien à enregistrer : le renouvellement se fera par rappel e-mail');
+});
+
+test('moyen à confirmation différée : « completed » encore impayé -> reste en attente ; « async_payment_succeeded » (même après l’expiration locale) -> exécuté une seule fois', async () => {
+  const t = await withStripe();
+  const r = await (await checkout(t, {})).json();
+  const sid = (await t.db.get('SELECT charge_id FROM orders')).charge_id;
+  assert.strictEqual((await webhook(t, completed(r.reference))).status, 200);            // session terminée mais pas encore payée (virement en cours)
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'awaiting_payment');
+  assert.ok(!t.ns.calls.some((x) => x.op === 'registerDomain'));
+  await t.db.run("UPDATE orders SET created_at = ?, status = 'expired'", new Date(Date.now() - 3 * 3600 * 1000).toISOString());   // 3 jours plus tard côté client : expirée localement
+  t.stState.sessions[sid].payment_status = 'paid';
+  const ev = { id: 'evt_2', type: 'checkout.session.async_payment_succeeded', data: { object: { client_reference_id: r.reference } } };
+  assert.strictEqual((await webhook(t, ev)).status, 200);
+  assert.strictEqual((await webhook(t, ev)).status, 200, 'rejoué : idempotent');
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'completed');
+  assert.strictEqual(t.ns.calls.filter((x) => x.op === 'registerDomain').length, 1);
+});
+
+test('moyen différé refusé (async_payment_failed) : commande en échec avec message clair ; une commande déjà exécutée n’est jamais touchée', async () => {
+  const t = await withStripe();
+  const r = await (await checkout(t, {})).json();
+  const fail = (ref) => webhook(t, { id: 'evt_3', type: 'checkout.session.async_payment_failed', data: { object: { client_reference_id: ref } } });
+  assert.strictEqual((await fail(r.reference)).status, 200);
+  const st = await status(t, r.orderId);
+  assert.strictEqual(st.status, 'failed'); assert.match(st.error, /refusé/);
+  const r2 = await (await checkout(t, { domains: ['deux.com'] })).json();
+  payAndComplete(t, r2); await webhook(t, completed(r2.reference));
+  assert.strictEqual((await fail(r2.reference)).status, 200);
+  assert.strictEqual((await t.db.get("SELECT status FROM orders WHERE reference = ?", r2.reference)).status, 'completed', 'jamais d’écrasement d’une commande exécutée');
+  assert.strictEqual((await webhook(t, { id: 'e', type: 'checkout.session.async_payment_failed', data: { object: { client_reference_id: 'inconnue' } } })).status, 200);
 });

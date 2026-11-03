@@ -99,7 +99,7 @@ function createApp(deps) {
   route('PATCH', '/api/me/company', async (c) => (await accounts.updateProfile(c.user.id, await c.body())), auth);
   route('PATCH', '/api/me', async (c) => (await accounts.updateProfile(c.user.id, await c.body())), auth);
   route('POST', '/api/me/password', async (c) => (await accounts.changePassword(c.user.id, await c.body())), auth);
-  route('GET', '/api/workspace', async (c) => workspace(c.user.id), auth);
+  route('GET', '/api/workspace', async (c) => await workspace(c.user.id), auth);
   route('GET', '/api/payment-methods', async (c) => ({ methods: await accounts.listMethods(c.user.id) }), auth);
   route('POST', '/api/payment-methods', async (c) => ({ methods: await accounts.addMethod(c.user.id, await c.body()) }), auth);
   route('PATCH', '/api/payment-methods/:id', async (c, p) => ({ methods: await accounts.setDefaultMethod(c.user.id, p[0]) }), auth);
@@ -116,14 +116,16 @@ function createApp(deps) {
     const raw = await c.raw(256 * 1024);
     if (!verifySignature(raw, c.req.headers['stripe-signature'], cfg.payments.stripe.webhookSecret)) throw new HttpError(400, 'Signature invalide.', 'bad_signature');
     let event; try { event = JSON.parse(raw.toString('utf8')); } catch (e) { throw new HttpError(400, 'JSON invalide.'); }
+    const obj = (event.data && event.data.object) || {};
+    const ref = obj.client_reference_id || (obj.metadata && obj.metadata.reference);
     if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
-      const obj = (event.data && event.data.object) || {};
-      const ref = obj.client_reference_id || (obj.metadata && obj.metadata.reference);
-      if (ref) await orders.confirmByReference(ref);   // revérifie chez Stripe ; une erreur -> 500 -> Stripe réessaie
+      if (ref) await orders.confirmByReference(ref);   // revérifie chez Stripe (un paiement différé encore « unpaid » reste en attente) ; une erreur -> 500 -> Stripe réessaie
+    } else if (event.type === 'checkout.session.async_payment_failed') {
+      if (ref) await orders.failByReference(ref, 'Le paiement a été refusé. Aucun montant n’a été débité : réessayez avec un autre moyen de paiement.');
     }
     return { received: true };
   });
-  route('GET', '/api/invoices', async (c) => ({ invoices: workspace(c.user.id).invoices }), auth);
+  route('GET', '/api/invoices', async (c) => ({ invoices: (await workspace(c.user.id)).invoices }), auth);
 
   /* ----- achats ----- */
   route('POST', '/api/checkout', async (c) => {
@@ -136,7 +138,7 @@ function createApp(deps) {
   route('GET', '/api/orders/:id', async (c, p) => (await orders.status(c.user.id, p[0])), auth);
 
   /* ----- domaines ----- */
-  route('GET', '/api/domains', async (c) => ({ domains: workspace(c.user.id).domains }), auth);
+  route('GET', '/api/domains', async (c) => ({ domains: (await workspace(c.user.id)).domains }), auth);
   route('POST', '/api/domains/connect', async (c) => { const b = await c.body(); return dns.connect(c.user.id, b.domain, b.mode); }, auth);
   route('PATCH', '/api/domains/:d', async (c, p) => (await settings.update(c.user.id, decodeURIComponent(p[0]), await c.body())), auth);
   route('POST', '/api/domains/:d/verify', async (c, p) => { limit(L.write, c.user.id); return await dns.verify(c.user.id, decodeURIComponent(p[0])); }, auth);

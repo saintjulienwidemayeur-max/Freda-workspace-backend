@@ -2,8 +2,9 @@
  * Stripe : paiements par carte bancaire (Checkout hébergé) et prélèvements automatiques des abonnements.
  *
  * Flux (https://docs.stripe.com/payments) :
- *  1. Premier paiement : POST /v1/checkout/sessions (mode=payment, customer, payment_intent_data[setup_future_usage]=off_session) -> l'URL hébergée par Stripe.
- *     Le client saisit sa carte chez Stripe : aucune donnée de carte ne touche ce serveur (PCI SAQ A). La carte est enregistrée pour les prélèvements suivants.
+ *  1. Premier paiement : POST /v1/checkout/sessions (mode=payment, customer, payment_method_options[card][setup_future_usage]=off_session) -> l'URL hébergée par Stripe.
+ *     Le client choisit son moyen de paiement chez Stripe (carte, Apple Pay, Google Pay, Link, et tous ceux activés au Dashboard) : aucune donnée de paiement ne touche ce serveur (PCI SAQ A).
+ *     Seule une CARTE est enregistrée pour les prélèvements suivants. Les moyens à confirmation différée (virements, débits) sont confirmés plus tard par checkout.session.async_payment_succeeded / _failed.
  *  2. Confirmation : webhook signé (checkout.session.completed) ET vérification serveur (GET /v1/checkout/sessions/:id) ; l'état n'est jamais lu du navigateur.
  *  3. Renouvellement : POST /v1/payment_intents (customer, payment_method, off_session=true, confirm=true) sans action du client.
  *     Si la banque exige une authentification (authentication_required) ou refuse, le prélèvement échoue proprement (le client est prévenu par e-mail).
@@ -84,9 +85,13 @@ function createStripe({ cfg, db, log }) {
   async function createCheckout({ amount, reference, userId, label, orderId }) {
     const customer = await customerFor(userId);
     const s = await api('POST', '/v1/checkout/sessions', {
-      mode: 'payment', customer, client_reference_id: reference, payment_method_types: ['card'],
+      // PAS de payment_method_types : Checkout propose TOUS les moyens activés dans le Dashboard Stripe (Paramètres > Moyens de paiement) et éligibles pour la devise,
+      // le montant et le pays du client. Seule la CARTE est enregistrée pour les prélèvements automatiques (les autres moyens ne servent qu'à ce paiement).
+      mode: 'payment', customer, client_reference_id: reference,
+      ...(cfg.payments.stripe.paymentMethodConfig ? { payment_method_configuration: cfg.payments.stripe.paymentMethodConfig } : {}),
       line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: cents(amount), product_data: { name: label || 'Freda Workspace' } } }],
-      payment_intent_data: { setup_future_usage: 'off_session', metadata: { reference } },
+      payment_method_options: { card: { setup_future_usage: 'off_session' } },
+      payment_intent_data: { metadata: { reference } },
       metadata: { reference },
       success_url: `${cfg.appUrl}/espace/facturation.html?payment=success&order=${encodeURIComponent(orderId || '')}`,
       cancel_url: `${cfg.appUrl}/espace/facturation.html?payment=cancelled&order=${encodeURIComponent(orderId || '')}`,

@@ -268,13 +268,13 @@ async function fakeStripe(state) {
     const p = url.pathname;
     if (p === '/v1/customers') { state.customers++; return json(res, 200, { id: 'cus_' + state.customers }); }
     if (p === '/v1/checkout/sessions' && req.method === 'POST') {
-      if (f.mode !== 'payment' || f['payment_intent_data[setup_future_usage]'] !== 'off_session' || !/^cus_/.test(f.customer || '') || !/^\d+$/.test(f['line_items[0][price_data][unit_amount]'] || '') || f['line_items[0][price_data][currency]'] !== 'usd' || !f.success_url || !f.client_reference_id) return err(res, 400, { type: 'invalid_request_error', message: 'bad checkout params' });
+      if (f.mode !== 'payment' || f['payment_method_options[card][setup_future_usage]'] !== 'off_session' || Object.keys(f).some((k) => k.startsWith('payment_method_types')) || !/^cus_/.test(f.customer || '') || !/^\d+$/.test(f['line_items[0][price_data][unit_amount]'] || '') || f['line_items[0][price_data][currency]'] !== 'usd' || !f.success_url || !f.client_reference_id) return err(res, 400, { type: 'invalid_request_error', message: 'bad checkout params' });
       const id = 'cs_' + Object.keys(state.sessions).length;
       state.sessions[id] = { id, status: 'open', payment_status: 'unpaid', amount_total: Number(f['line_items[0][price_data][unit_amount]']), ref: f.client_reference_id, customer: f.customer, url: 'https://checkout.stripe.test/' + id };
       return json(res, 200, state.sessions[id]);
     }
     let m = /^\/v1\/checkout\/sessions\/(cs_\w+)$/.exec(p);
-    if (m) { const s = state.sessions[m[1]]; if (!s) return err(res, 404, { message: 'no such session' }); return json(res, 200, s.payment_status === 'paid' ? { ...s, payment_intent: { id: 'pi_' + s.id, payment_method: { id: 'pm_' + (state.cardId || 'card1'), card: { brand: 'visa', last4: '4242', exp_month: 4, exp_year: 2031 } } } } : s); }
+    if (m) { const s = state.sessions[m[1]]; if (!s) return err(res, 404, { message: 'no such session' }); return json(res, 200, s.payment_status === 'paid' ? { ...s, payment_intent: { id: 'pi_' + s.id, payment_method: state.noCard ? { id: 'pm_paypal1', type: 'paypal' } : { id: 'pm_' + (state.cardId || 'card1'), card: { brand: 'visa', last4: '4242', exp_month: 4, exp_year: 2031 } } } } : s); }
     if (p === '/v1/payment_intents' && req.method === 'POST') {
       if (f.off_session !== 'true' || f.confirm !== 'true' || !f.payment_method || !f.customer || !/^\d+$/.test(f.amount || '')) return err(res, 400, { type: 'invalid_request_error', message: 'bad pi params' });
       if (state.authRequired) return err(res, 402, { code: 'authentication_required', message: '3DS', payment_intent: { status: 'requires_action' } });

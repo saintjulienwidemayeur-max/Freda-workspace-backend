@@ -1,6 +1,6 @@
 /** GET /workspace : tout ce que l'espace client affiche, dans la forme attendue par assets/js/api.js (FW.workspace). */
 function createWorkspace({ db, accounts, dns, mail }) {
-  return async function get(userId) {
+  return async function buildWorkspace(userId) {
     const domains = await db.all('SELECT * FROM domains WHERE user_id = ? ORDER BY is_primary DESC, created_at', userId);
     const sub = await db.get('SELECT * FROM subscriptions WHERE user_id = ?', userId);
     const zones = {};
