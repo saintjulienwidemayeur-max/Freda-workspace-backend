@@ -79,6 +79,21 @@ function loadConfig(env = process.env) {
   };
 }
 
+/** Rezime pou le journal de démarrage : SEULEMENT des booléens (jamais une valeur), pour savoir ce qui est configuré sans exposer un secret. */
+function integrationSummary(cfg) {
+  const s = cfg.payments.stripe;
+  return {
+    nodeEnv: cfg.nodeEnv, database: cfg.databaseUrl ? 'postgresql' : 'pglite',
+    jwtSecret: !!cfg.auth.jwtSecret, dataKey: !!cfg.dataKey, adminToken: !!cfg.adminToken,
+    namesilo: !!cfg.namesilo.key, namesiloMode: cfg.namesilo.mode, nameservers: cfg.namesilo.nameservers.length,
+    paym: !!(cfg.payments.paym.clientId && cfg.payments.paym.clientSecret), paymentsProvider: cfg.payments.provider,
+    stripeSecretKey: !!s.secretKey, stripeWebhookSecret: !!s.webhookSecret, stripePublishableKey: !!s.publishableKey, stripeUiMode: s.secretKey ? s.uiMode : null,
+    brevo: !!cfg.mailer.brevoKey, mailer: cfg.mailer.provider, purelymail: !!cfg.purelymail.apiKey,
+    google: !!(cfg.google.clientId && cfg.google.clientSecret), alertWebhook: !!cfg.alerts.webhookUrl,
+    apns: !!cfg.push.apns.key, fcm: !!cfg.push.fcm.serviceAccount, appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, allowedOrigins: cfg.allowedOrigins.length,
+  };
+}
+
 /** Refuse de démarrer dans une configuration dangereuse (achats réels avec faux paiements, etc.). */
 function assertSafe(cfg) {
   const errors = [];
@@ -108,4 +123,4 @@ function assertSafe(cfg) {
   return errors;
 }
 
-module.exports = { loadConfig, assertSafe, PLANS };
+module.exports = { integrationSummary, loadConfig, assertSafe, PLANS };

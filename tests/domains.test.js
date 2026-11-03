@@ -163,3 +163,15 @@ test('GET /api/health : 200 avec la base ; 503 si la base est inaccessible (Rend
   await t.app.app.db.close();
   const down = await t.api('/api/health'); assert.strictEqual(down.status, 503); assert.strictEqual((await down.json()).code, 'db_unavailable');
 });
+
+test('rezime de démarrage : uniquement des booléens et des réglages non secrets, jamais une valeur de clé', () => {
+  const { integrationSummary } = require('../src/config');
+  const secrets = { JWT_SECRET: 'jwt-' + 'x'.repeat(40), DATA_KEY: 'a'.repeat(64), ADMIN_TOKEN: 'adm-secret', NAMESILO_API_KEY: 'ns-secret', STRIPE_SECRET_KEY: 'sk_live_secret', STRIPE_WEBHOOK_SECRET: 'whsec_secret', STRIPE_PUBLISHABLE_KEY: 'pk_live_pub', BREVO_API_KEY: 'brevo-secret', PURELYMAIL_API_KEY: 'pm-secret', ALERT_WEBHOOK_URL: 'https://hooks.example/secret', DATABASE_URL: 'postgresql://u:dbpassword@h:5432/db', GOOGLE_CLIENT_ID: 'gid', GOOGLE_CLIENT_SECRET: 'gsecret', PAYM_CLIENT_ID: 'pid', PAYM_CLIENT_SECRET: 'psecret' };
+  const sum = integrationSummary(loadConfig(secrets));
+  const text = JSON.stringify(sum);
+  for (const v of Object.values(secrets)) assert.ok(!text.includes(v), 'fuite : ' + v);
+  assert.deepStrictEqual([sum.jwtSecret, sum.dataKey, sum.adminToken, sum.namesilo, sum.stripeSecretKey, sum.stripeWebhookSecret, sum.stripePublishableKey, sum.brevo, sum.purelymail, sum.alertWebhook, sum.google, sum.paym], Array(12).fill(true));
+  assert.strictEqual(sum.stripeUiMode, 'embedded');
+  const empty = integrationSummary(loadConfig({}));
+  assert.deepStrictEqual([empty.jwtSecret, empty.namesilo, empty.stripeSecretKey, empty.purelymail, empty.alertWebhook, empty.paym], Array(6).fill(false));
+});

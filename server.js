@@ -1,6 +1,6 @@
 const http = require('http');
 const crypto = require('crypto');
-const { loadConfig, assertSafe } = require('./src/config');
+const { loadConfig, assertSafe, integrationSummary } = require('./src/config');
 const { openDb } = require('./src/db');
 const { HttpError } = require('./src/errors');
 const { createClient } = require('./src/namesilo');
@@ -234,7 +234,7 @@ if (require.main === module) {
   app.app.db.ready.then(() => {
     app.app.jobs.start(); app.app.jobs.startSweeper();
     app.app.push.start().catch((e) => log('error', 'push_start_failed', { message: e.message }));
-    app.listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.mode, payments: cfg.payments.provider, mailer: cfg.mailer.provider, database: cfg.databaseUrl ? 'postgresql' : 'pglite' }));
+    app.listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.mode, payments: cfg.payments.provider, mailer: cfg.mailer.provider, database: cfg.databaseUrl ? 'postgresql' : 'pglite', integrations: integrationSummary(cfg) }));
   }, (e) => { log('fatal', 'Base de données inaccessible ou migration échouée : ' + e.message); process.exit(1); });
   const stop = () => { app.app.jobs.stop(); app.app.push.stop(); app.close(() => { app.app.db.close().finally(() => process.exit(0)); }); setTimeout(() => process.exit(0), 5000).unref(); };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
