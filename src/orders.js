@@ -17,7 +17,7 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
 const OPEN = ['awaiting_payment', 'fulfilling'];
 const EXPIRE_MS = 2 * 3600 * 1000;
 
-function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log }) {
+function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log }) {
   const parse = (o) => ({ ...o, payload: JSON.parse(o.payload || '{}') });
 
   function summarize(o, extra = {}) {
@@ -75,7 +75,9 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
       const domain = body.domain ? String(body.domain).toLowerCase() : '';
       if (domain && !db.get('SELECT 1 FROM domains WHERE user_id = ? AND name = ?', user.id, domain)) throw new HttpError(400, 'Ce domaine n’est pas dans votre espace.', 'invalid_domain');
       const m = body.mailbox || {};
-      payload = { plan: body.plan, cycle: body.cycle, domain, mailbox: m.local ? { local: String(m.local).toLowerCase(), name: String(m.name || m.local) } : null, renewal: !!body.renewal };
+      // le mot de passe choisi est validé AVANT tout paiement, puis conservé CHIFFRÉ le temps de la commande (jamais en clair, supprimé après exécution)
+      const mbPw = m.local && m.password ? mail.validatePassword(m.password, String(m.local).toLowerCase()) : null;
+      payload = { plan: body.plan, cycle: body.cycle, domain, mailbox: m.local ? { local: String(m.local).toLowerCase(), name: String(m.name || m.local), ...(mbPw ? { passwordEnc: vault.encrypt(mbPw) } : {}) } : null, renewal: !!body.renewal };
     } else {
       const years = Number(body.years || 1);
       if (!Number.isInteger(years) || years < 1 || years > cfg.maxYears) throw new HttpError(400, 'Durée invalide.', 'invalid_years');
@@ -158,6 +160,9 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
   /** Balayage : confirme (ou fait expirer) les commandes en attente, même si le client a fermé la page. */
   async function sweep() {
     let n = 0;
+    for (const r of db.all("SELECT id, payload FROM orders WHERE status NOT IN ('awaiting_payment','fulfilling') AND payload LIKE '%passwordEnc%'")) {
+      const p = JSON.parse(r.payload); if (p.mailbox) delete p.mailbox.passwordEnc; setOrder(r.id, { payload: p });   // aucun mot de passe (même chiffré) ne survit à une commande terminée
+    }
     for (const o of db.all("SELECT * FROM orders WHERE status = 'awaiting_payment' ORDER BY created_at LIMIT 100")) { await checkPayment(o); n++; }
     return { checked: n };
   }
@@ -245,19 +250,24 @@ function createOrders({ cfg, db, payments, catalog, registrar, dns, mail, mailer
     const back = await mail.reactivateMailboxes(o.user_id);      // offre payée à nouveau : les boîtes suspendues rouvrent
     if (back.mailboxes.length) mailer.trySend({ to: user.email, ...templates.mailboxesReactivated(user, back.mailboxes, cfg.appUrl + '/connexion.html') });
     if (back.failed) alert('warn', 'Boîtes non réactivées (à retenter)', { userId: o.user_id, failed: back.failed });
-    let initialPassword = null;
+    let initialPassword = null, mailboxReady = false;
     if (p.domain && !p.renewal) {
       await dns.autofix(o.user_id, p.domain, { quiet: true }).catch(() => log('warn', 'autofix_failed', { domain: p.domain }));
       if (p.mailbox) {
         try {
-          const r = await mail.createBox(o.user_id, { local: p.mailbox.local, domain: p.domain, name: p.mailbox.name });
+          const chosen = p.mailbox.passwordEnc ? vault.decrypt(p.mailbox.passwordEnc) : undefined;
+          const r = await mail.createBox(o.user_id, { local: p.mailbox.local, domain: p.domain, name: p.mailbox.name, password: chosen });
           initialPassword = r.initialPassword;
+          mailboxReady = r.providerReady;
         } catch (e) { log('warn', 'first_mailbox_failed', { message: e.message }); }
       }
     }
-    setOrder(o.id, { status: 'completed', payload: { ...p, mailboxCreated: initialPassword !== null } });
+    const clean = { ...p, mailbox: p.mailbox ? { local: p.mailbox.local, name: p.mailbox.name } : null };   // le mot de passe chiffré est supprimé dès que la boîte existe
+    setOrder(o.id, { status: 'completed', payload: { ...clean, mailboxCreated: mailboxReady } });
     mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
-    if (initialPassword) mailer.trySend({ to: user.email, subject: 'Votre première boîte mail', text: `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nMot de passe initial : ${initialPassword}\nChangez-le dès la première connexion sur ${cfg.appUrl}/connexion.html (Webmail).` });
+    if (mailboxReady) mailer.trySend({ to: user.email, subject: 'Votre première boîte mail', text: initialPassword
+      ? `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nMot de passe initial : ${initialPassword}\nChangez-le dès la première connexion.`
+      : `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nOuvrez l'application Freda Mail et connectez-vous avec cette adresse et le mot de passe que vous avez choisi (il n'est jamais envoyé par e-mail).` });
     return { initialPassword };
   }
 

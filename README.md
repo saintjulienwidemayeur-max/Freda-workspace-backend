@@ -4,7 +4,7 @@ API Node.js (≥ 22.13, **aucune dépendance npm**) pour [Freda-workspace](https
 
 ```bash
 cp .env.example .env     # puis renseigner au minimum JWT_SECRET et NAMESILO_API_KEY
-npm test                 # 97 tests, tous contre de faux serveurs (aucun appel réel)
+npm test                 # 111 tests, tous contre de faux serveurs (aucun appel réel)
 AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local (mode dry-run : aucun achat)
 ```
 
@@ -26,14 +26,14 @@ AUTH_MODE=demo NAMESILO_API_KEY=… node server.js       # développement local 
 | **Opérations** | tâches périodiques, `POST /api/admin/jobs/run`, `GET /api/admin/orders?status=needs_attention`, `POST /api/client-errors`, alertes webhook | Rappels d'expiration 30/14/7/1 j, échéances d'offre, balayage des paiements. |
 
 ## API pour l'application mobile (iPhone / Android)
-Parcours : le client télécharge l'app, se connecte avec **son compte Freda** (e-mail + mot de passe créés sur la plateforme : `POST /api/auth/login`, jeton `Authorization: Bearer`), puis l'app obtient l'accès à ses boîtes **sans jamais connaître le mot de passe de la boîte** :
+Parcours : le client choisit **le mot de passe de sa boîte** sur la plateforme (à l'achat de l'email pro, ou quand le titulaire crée la boîte). Dans l'app, il saisit **son adresse pro + ce mot de passe** :
 
-1. `GET /api/mailboxes` → boîtes du compte (`status` : `active` | `suspended` | `pending_provider`). `suspended` = afficher « abonnement expiré, réglez votre offre ».
-2. `POST /api/mailboxes/:id/devices` `{ "name": "iPhone de Claire", "platform": "ios" | "android" }` → `{ device, credentials: { address, username, appPassword, imap, smtp } }`. **Le mot de passe d'application n'est renvoyé qu'une fois** : le ranger dans le Keychain (iOS) / Keystore (Android). Un mot de passe par appareil, révocable. Le titulaire reçoit un e-mail « nouvel appareil ».
-3. L'app parle ensuite **directement** en IMAP (`imap.purelymail.com:993`, SSL/TLS) et SMTP (`smtp.purelymail.com:465` SSL/TLS, ou `587` STARTTLS), identifiant = adresse complète. Réglages aussi via `GET /api/mail/config`.
-4. `GET /api/devices` liste les appareils (jamais de secret) ; `DELETE /api/devices/:id` retire l'appareil (le mot de passe est supprimé chez Purelymail, accès coupé aussitôt).
+1. `POST /api/mail/login` `{ "email": "contact@monentreprise.com", "password": "…" }` (public, sans jeton). Le serveur vérifie le mot de passe chez Purelymail par **IMAP** (`AUTHENTICATE PLAIN`) — uniquement pour les adresses connues de la plateforme. Réponse : `{ mailbox: { address, name, status }, imap, smtp }`. Erreurs : `401 invalid_credentials` (mot de passe faux **ou** adresse inconnue : même réponse), `402 subscription_inactive` (offre suspendue/résiliée : l'app affiche « abonnement expiré, réglez-le depuis votre espace Freda »), `429` (5 mots de passe faux par adresse / 15 min, puis blocage), `503` (messagerie en activation ou injoignable : jamais confondu avec un mauvais mot de passe).
+2. L'app range l'adresse et le mot de passe dans le Keychain (iOS) / Keystore (Android) puis parle **directement** en IMAP (`imap.purelymail.com:993` SSL/TLS) et SMTP (`smtp.purelymail.com:465` SSL/TLS, ou `587` STARTTLS) avec l'adresse complète comme identifiant. Si l'IMAP échoue plus tard, rappeler `/api/mail/login` pour connaître la vraie raison (mot de passe changé, abonnement expiré…).
+3. Mot de passe oublié / changé : le titulaire du compte Freda utilise `POST /api/mailboxes/:id/password` `{ "password" }` (10–128 caractères) depuis son espace ; l'app redemande alors le nouveau mot de passe.
 
-Suspension : les mots de passe d'application cessent de fonctionner (boîte renommée) et **refonctionnent tels quels à la réactivation** : aucune reconfiguration. Limite : `MAX_DEVICES_PER_MAILBOX` (10). Les mots de passe d'application sont chiffrés (AES-256-GCM, `DATA_KEY`) car leur révocation exige la valeur en clair. **Pas de notifications push** : Apple a cassé IMAP IDLE et Purelymail n'a pas le certificat Apple ; un service push (IMAP IDLE côté serveur + APNs/FCM) reste à construire. `createAppPassword` : l'API n'expose pas de choix de portées (IMAP/SMTP/…) ; à vérifier avec un vrai compte.
+Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-mail, jamais stocké** : validé avant le paiement, gardé chiffré (AES-256-GCM, `DATA_KEY`) le temps de la commande puis supprimé (aussi purgé si la commande échoue). Suspension : la boîte est renommée, **le mot de passe n'est pas touché** ; à la réactivation le client retrouve exactement ses identifiants, rien à ressaisir.
+Optionnel : `POST /api/mailboxes/:id/devices` crée un mot de passe d'application par appareil (révocable, `DELETE /api/devices/:id`) pour qui préfère ne pas conserver le mot de passe principal sur le téléphone ; non utilisé par le parcours ci-dessus. **Pas de notifications push** : Apple a cassé IMAP IDLE et Purelymail n'a pas le certificat Apple ; un service push (IMAP IDLE côté serveur + APNs/FCM) reste à construire, et il faudra alors un jeton de session pour l'app.
 
 ## Sécurité
 - **Dry-run par défaut** : lectures NameSilo réelles, mais enregistrement/renouvellement/verrouillage/DNS **simulés**. Seule la valeur exacte `NAMESILO_MODE=live` achète pour de vrai.

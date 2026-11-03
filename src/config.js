@@ -51,6 +51,7 @@ function loadConfig(env = process.env) {
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
     dataKey: env.DATA_KEY || '',
+    imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
     maxDevicesPerMailbox: Number(env.MAX_DEVICES_PER_MAILBOX) || 10,
     purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0', suspendMode: env.MAIL_SUSPEND_MODE === 'password' ? 'password' : 'rename' },
     dns: { resolvers: list(env.DNS_RESOLVERS, '8.8.8.8,1.1.1.1,9.9.9.9,208.67.222.222') },

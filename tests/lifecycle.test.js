@@ -29,7 +29,7 @@ test('impayée depuis plus de 7 jours : boîtes réellement suspendues (mot de p
   assert.strictEqual(modify(t).length, 1, 'UN seul appel : renommage + mot de passe');
   assert.strictEqual(modify(t)[0].body.userName, 'contact@neuf.com', 'adresse complète');
   assert.match(modify(t)[0].body.newUserName, /^susp-[0-9a-f]{10}@neuf\.com$/);
-  assert.ok(modify(t)[0].body.newPassword.length >= 20, 'secret aléatoire');
+  assert.strictEqual(modify(t)[0].body.newPassword, undefined, 'le mot de passe choisi par le client n’est pas touché');
   assert.ok(!t.pm.calls.some((c) => c.path.endsWith('/deleteUser')), 'rien n’est supprimé');
   assert.strictEqual(t.db.get('SELECT COUNT(*) AS n FROM mailboxes').n, 1, 'la boîte existe toujours');
   assert.strictEqual(t.mailer.sent.filter((m) => /suspendues/.test(m.subject)).length, 1);
@@ -49,7 +49,6 @@ test('suspension : plus AUCUN accès (mot de passe, mot de passe d’application
   assert.ok(!t.pmState.login('contact@neuf.com', t.initialPassword), 'mot de passe principal refusé');
   assert.ok(!t.pmState.login('contact@neuf.com', 'app-secret'), 'mot de passe d’application refusé');
   assert.ok(!JSON.stringify(await (await t.user('/api/workspace')).json()).includes(renamed.split('@')[0]), 'le nouveau nom n’est jamais exposé au client');
-  assert.ok(!t.pmState.login(renamed, t.initialPassword), 'ni le nouveau nom avec l’ancien mot de passe');
   assert.strictEqual(t.pmState.deliver('contact@neuf.com'), renamed, 'le courrier entrant arrive dans la boîte conservée');
   assert.strictEqual(t.db.get('SELECT rule_state AS r FROM mailboxes').r, 'set');
 });
@@ -85,26 +84,36 @@ test('suspension : si Purelymail est en panne la boîte reste ouverte et la susp
   assert.strictEqual(boxStatus(t), 'suspended');
 });
 
-test('réactivation : le paiement rouvre les boîtes avec un NOUVEAU mot de passe envoyé par e-mail ; les rappels repartent à zéro', async () => {
+test('réactivation : le paiement rouvre les boîtes avec les MÊMES identifiants (aucun mot de passe renvoyé) ; les rappels repartent à zéro', async () => {
   const t = await withMail();
   t.db.run('UPDATE subscriptions SET renews_at = ?, notices = 7', days(-9)); await run(t);
   assert.strictEqual(boxStatus(t), 'suspended');
+  assert.ok(!t.pmState.login('contact@neuf.com', t.initialPassword), 'suspendue : accès coupé');
   const before = modify(t).length;
   assert.strictEqual((await sub(t)).status, 200);
   assert.strictEqual(boxStatus(t), 'active');
   const reopen = modify(t)[before];
   assert.match(reopen.body.userName, /^susp-/); assert.strictEqual(reopen.body.newUserName, 'contact@neuf.com');
-  t.pmState.appPasswords['contact@neuf.com'] = t.pmState.appPasswords['contact@neuf.com'] || [];
+  assert.strictEqual(reopen.body.newPassword, undefined, 'aucun nouveau mot de passe');
   assert.ok(t.pmState.users.includes('contact@neuf.com') && !t.pmState.users.some((u) => u.startsWith('susp-')), 'ancien nom rétabli');
   assert.strictEqual(t.pmState.rules.length, 0, 'règle de suspension retirée');
   assert.strictEqual(t.pmState.deliver('contact@neuf.com'), 'contact@neuf.com');
-  assert.ok(t.pmState.login('contact@neuf.com', reopen.body.newPassword), 'le nouveau mot de passe fonctionne');
-  assert.strictEqual(t.db.get('SELECT rule_state AS r, provider_user AS u FROM mailboxes').r, '');
+  assert.ok(t.pmState.login('contact@neuf.com', t.initialPassword), 'son mot de passe d’origine refonctionne');
   const mail = t.mailer.sent.find((m) => /réactivées/.test(m.subject));
-  assert.ok(mail && mail.text.includes('contact@neuf.com : ' + reopen.body.newPassword), 'le mot de passe envoyé est celui posé chez Purelymail');
+  assert.ok(mail && /mêmes identifiants/.test(mail.text) && /n'a pas changé/.test(mail.text) && !mail.text.includes(t.initialPassword), 'e-mail sans mot de passe');
   const s = t.db.get('SELECT * FROM subscriptions');
   assert.deepStrictEqual([s.status, s.notices, s.cancel_at_period_end], ['active', 0, 0]);
-  assert.ok(!JSON.stringify(t.db.all('SELECT * FROM mailboxes')).includes(reopen.body.newPassword), 'mot de passe jamais stocké');
+  assert.strictEqual(t.db.get('SELECT rule_state AS r, provider_user AS u FROM mailboxes').r, '');
+});
+
+test('mode « password » : réactivation = NOUVEAU mot de passe envoyé par e-mail (l’ancien avait été remplacé)', async () => {
+  const t = await withMail({ env: { MAIL_SUSPEND_MODE: 'password' } });
+  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await run(t);
+  const before = modify(t).length;
+  await sub(t);
+  const reopen = modify(t)[before];
+  assert.ok(t.mailer.sent.find((m) => /réactivées/.test(m.subject)).text.includes('contact@neuf.com : ' + reopen.body.newPassword));
+  assert.ok(t.pmState.login('contact@neuf.com', reopen.body.newPassword));
 });
 
 test('réactivation : boîte en échec chez Purelymail -> reste suspendue (pas de faux « actif ») et alerte', async () => {

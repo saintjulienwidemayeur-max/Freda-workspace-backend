@@ -117,7 +117,7 @@ async function fakePurelymail(state) {
         if (state.users.includes(`${b.userName}@${b.domainName}`)) return json(res, 200, { type: 'error', code: 'userExists', message: 'exists' });
         state.users.push(`${b.userName}@${b.domainName}`); state.passwords[`${b.userName}@${b.domainName}`] = b.password; return json(res, 200, { type: 'success', result: {} });
       case 'modifyUser':
-        if (!str(b.userName) || !b.userName.includes('@') || !str(b.newPassword)) return bad(res, 'modifyUser: userName complet + newPassword');
+        if (!str(b.userName) || !b.userName.includes('@') || (!str(b.newPassword) && !str(b.newUserName))) return bad(res, 'modifyUser: userName complet + newPassword et/ou newUserName');
         if (!state.users.includes(b.userName)) return json(res, 200, { type: 'error', code: 'userNotFound', message: 'no such user ' + b.userName });
         if (b.newUserName) {
           if (state.users.includes(b.newUserName)) return json(res, 200, { type: 'error', code: 'userExists', message: 'exists' });
@@ -159,6 +159,34 @@ async function fakePurelymail(state) {
   const url = await listen(server);
   closers.push(() => { server.closeAllConnections(); server.close(); });
   return { calls, url: url + '/api/v0' };
+}
+
+/** Faux serveur IMAP (TCP simple) : AUTHENTICATE PLAIN contrôlé par le modèle d'authentification du faux Purelymail. */
+async function fakeImap(pmState) {
+  const net = require('net');
+  const calls = [];
+  const server = net.createServer((sock) => {
+    sock.setEncoding('utf8'); sock.write('* OK IMAP ready\r\n');
+    let buf = '', waitingCreds = false;
+    sock.on('error', () => {});
+    sock.on('data', (d) => {
+      buf += d; let i;
+      while ((i = buf.indexOf('\r\n')) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 2);
+        if (pmState.imapDown) return sock.destroy();
+        if (/^a1 AUTHENTICATE PLAIN$/i.test(line)) { waitingCreds = true; sock.write('+ \r\n'); }
+        else if (waitingCreds) {
+          waitingCreds = false;
+          const [, user, pass] = Buffer.from(line, 'base64').toString('utf8').split('\0');
+          calls.push({ user, pass });
+          sock.write(pmState.login(user, pass) ? 'a1 OK Authenticated\r\n' : 'a1 NO [AUTHENTICATIONFAILED] bad credentials\r\n');
+        } else if (/^a2 LOGOUT/i.test(line)) { sock.write('* BYE\r\na2 OK\r\n'); sock.end(); }
+      }
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  closers.push(() => { server.close(); });
+  return { calls, port: server.address().port };
 }
 
 /** Faux Stripe : contrôle le contrat réel (Bearer, formulaire imbriqué, champs obligatoires, clés d'idempotence) et simule paiement, refus, 3-D Secure. */
@@ -210,6 +238,7 @@ async function setup(over = {}) {
   const google = await fakeGoogle();
   const pmState = { fail: false };
   const pm = await fakePurelymail(pmState);
+  const imap = await fakeImap(pmState);
   const stState = {};
   const stripe = await fakeStripe(stState);
   const env = {
@@ -217,7 +246,7 @@ async function setup(over = {}) {
     PRICE_MARKUP_PERCENT: '30', PRICE_MIN_MARKUP: '1.5', DOMAIN_TLDS: '.com,.net,.org,.io,.xyz', JWT_SECRET: 'j'.repeat(40),
     PAYM_CLIENT_ID: 'cid', PAYM_CLIENT_SECRET: 'sec', PAYM_BASE_URL: paym.url, APP_URL: 'https://site.test', API_URL: 'https://api.test',
     GOOGLE_CLIENT_ID: 'gid', GOOGLE_CLIENT_SECRET: 'gsec', GOOGLE_TOKEN_URL: google + '/token', GOOGLE_USERINFO_URL: google + '/userinfo',
-    PURELYMAIL_API_KEY: 'pm-key', PURELYMAIL_BASE_URL: pm.url,
+    PURELYMAIL_API_KEY: 'pm-key', PURELYMAIL_BASE_URL: pm.url, IMAP_HOST: '127.0.0.1', IMAP_PORT: String(imap.port), IMAP_SECURE: 'false',
     ...(over.stripe ? { STRIPE_SECRET_KEY: 'sk_test_fake', STRIPE_WEBHOOK_SECRET: 'whsec_test', STRIPE_BASE_URL: stripe.url } : {}), ...over.env,
   };
   const cfg = loadConfig(env);
@@ -236,7 +265,7 @@ async function setup(over = {}) {
   const api = (path, opts = {}) => fetch(base + path, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.as ? { 'X-Demo-User': opts.as } : {}), ...(opts.headers || {}) }, body: opts.body ? JSON.stringify(opts.body) : undefined, redirect: opts.redirect || 'follow' });
   const as = (email = 'paul@example.com') => (path, opts = {}) => api(path, { ...opts, as: email });
   closers.push(() => { app.closeAllConnections(); app.close(); try { app.app.db.close(); } catch (e) { /* déjà fermée */ } });
-  return { api, as, user: as(), state, ns, paym, pm, pmState, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
+  return { api, as, user: as(), state, ns, paym, pm, pmState, imap, stripe, stState, google, cfg, app, db: app.app.db, mailer: cfgMailer, refunds, dnsState, base };
 }
 
 const closeAll = () => closers.splice(0).forEach((c) => { try { c(); } catch (e) { /* ignoré */ } });

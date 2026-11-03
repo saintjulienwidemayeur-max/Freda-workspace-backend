@@ -11,8 +11,16 @@
 const crypto = require('crypto');
 const { HttpError } = require('./errors');
 const { templates } = require('./mailer');
+const { imapLogin } = require('./imap');
 
 const LOCAL = /^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
+/** Mot de passe de la boîte choisi par le client : 10 à 128 caractères, ni l'adresse ni sa partie locale. */
+function validatePassword(pw, local) {
+  const p = String(pw ?? '');
+  if (p.length < 10 || p.length > 128 || /[\0\r\n]/.test(p)) throw new HttpError(400, 'Le mot de passe de la boîte doit faire entre 10 et 128 caractères.', 'weak_password');
+  if (local && (p.toLowerCase() === local || p.toLowerCase().startsWith(local + '@'))) throw new HttpError(400, 'Le mot de passe ne peut pas être votre adresse.', 'weak_password');
+  return p;
+}
 const id = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
 const now = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
 
@@ -88,7 +96,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   const listAliases = (userId) => db.all('SELECT * FROM aliases WHERE user_id = ? ORDER BY from_addr', userId).map(alias);
 
   /** Crée une boîte. Le mot de passe initial n'est renvoyé QU'ICI (jamais stocké). */
-  async function createBox(userId, { local, domain, name }) {
+  async function createBox(userId, { local, domain, name, password: chosen }) {
     const sub = subscription(userId);
     const lp = String(local || '').trim().toLowerCase();
     if (!LOCAL.test(lp)) throw new HttpError(400, 'Nom de boîte invalide (lettres, chiffres, point, tiret).', 'invalid_local');
@@ -98,13 +106,14 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     if (count >= plan.mailboxes) throw new HttpError(403, `Votre offre ${plan.name} est limitée à ${plan.mailboxes} boîte${plan.mailboxes > 1 ? 's' : ''}. Passez à une offre supérieure.`, 'plan_limit');
     const address = `${lp}@${d.name}`;
     if (db.get('SELECT 1 FROM mailboxes WHERE address = ?', address) || db.get('SELECT 1 FROM aliases WHERE from_addr = ?', address)) throw new HttpError(409, 'Cette adresse existe déjà.', 'duplicate');
-    const password = crypto.randomBytes(12).toString('base64url');
+    const chosenPw = chosen === undefined || chosen === null || chosen === '' ? null : validatePassword(chosen, lp);
+    const password = chosenPw || crypto.randomBytes(12).toString('base64url');
     let status = 'pending_provider';
     if (pm.enabled) { await ensureProviderDomain(userId, d); await pm.createUser({ local: lp, domain: d.name, password }); status = 'active'; }
     const bid = id('mbx');
     db.run('INSERT INTO mailboxes (id, user_id, domain, local_part, address, name, role, provider_status, created_at) VALUES (?,?,?,?,?,?,?,?,?)', bid, userId, d.name, lp, address, String(name || lp).trim().slice(0, 80), count === 0 ? 'Propriétaire' : 'Utilisateur', status, new Date().toISOString());
     db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'mail-plus', `Boîte ${address} créée`, now());
-    return { mailbox: box(db.get('SELECT * FROM mailboxes WHERE id = ?', bid)), initialPassword: status === 'active' ? password : null, providerReady: status === 'active' };
+    return { mailbox: box(db.get('SELECT * FROM mailboxes WHERE id = ?', bid)), initialPassword: status === 'active' && !chosenPw ? password : null, providerReady: status === 'active' };
   }
 
   async function removeBox(userId, boxId) {
@@ -168,17 +177,17 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   }
 
   /**
-   * Suspension (offre impayée ou résiliée). Mode « rename » (défaut) : en UN appel modifyUser, la boîte est renommée (susp-xxxx) ET reçoit un secret aléatoire jamais conservé.
+   * Suspension (offre impayée ou résiliée). Mode « rename » (défaut) : la boîte est renommée (susp-xxxx) ; le mot de passe CHOISI PAR LE CLIENT n'est pas touché.
    * L'identifiant de connexion change donc : mot de passe principal, mots de passe d'application et sessions webmail de l'ancienne adresse cessent tous de fonctionner,
-   * le client ne connaît pas le nouveau nom. Le courrier entrant est redirigé vers la boîte renommée : messages conservés, rien n'est supprimé.
-   * Mode « password » (MAIL_SUSPEND_MODE=password) : seul le mot de passe change (ne révoque PAS les mots de passe d'application). Les échecs sont retentés au passage suivant.
+   * le client ne connaît pas le nouveau nom, et à la réactivation il retrouve exactement ses identifiants. Le courrier entrant est redirigé vers la boîte renommée : messages conservés, rien n'est supprimé.
+   * Mode « password » (MAIL_SUSPEND_MODE=password) : seul le mot de passe change, remplacé par un secret aléatoire (ne révoque PAS les mots de passe d'application). Les échecs sont retentés au passage suivant.
    */
   async function suspendMailboxes(userId) {
     let suspended = 0, failed = 0;
     for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'active'", userId)) {
       try {
         const alias = renameMode ? 'susp-' + crypto.randomBytes(5).toString('hex') : '';
-        if (pm.enabled) await pm.modifyUser({ local: b.local_part, domain: b.domain, newLocal: alias || undefined, password: secret() });
+        if (pm.enabled) await pm.modifyUser({ local: b.local_part, domain: b.domain, newLocal: alias || undefined, password: alias ? undefined : secret() });
         db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ? WHERE id = ?", alias, alias ? 'pending' : '', b.id);
         suspended++;
       } catch (e) { failed++; log('warn', 'mailbox_suspend_failed', { mailbox: b.address }); }
@@ -187,11 +196,11 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     return { suspended, failed };
   }
 
-  /** Réactivation après paiement : l'ancien nom est rétabli (les appareils déjà configurés refonctionnent) et un NOUVEAU mot de passe est posé, renvoyé UNE fois, jamais stocké. */
+  /** Réactivation après paiement : mode rename -> l'ancien nom est rétabli, le client retrouve SES identifiants (aucun mot de passe à renvoyer). Mode password -> nouveau mot de passe, renvoyé UNE fois. */
   async function reactivateMailboxes(userId) {
     const mailboxes = []; let failed = 0;
     for (const b of db.all("SELECT * FROM mailboxes WHERE user_id = ? AND provider_status = 'suspended'", userId)) {
-      const password = secret();
+      const password = b.provider_user ? undefined : secret();
       try {
         if (pm.enabled) await pm.modifyUser({ local: providerLocal(b), domain: b.domain, newLocal: b.provider_user ? b.local_part : undefined, password });
         db.run("UPDATE mailboxes SET provider_status = 'active', provider_user = '', rule_state = ? WHERE id = ?", b.provider_user ? 'cleanup' : '', b.id);
@@ -212,7 +221,53 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     return { failed };
   }
 
-  /* ---------- Appareils (applications mobiles iPhone / Android) ---------- */
+  /* ---------- Application mobile ---------- */
+  /** Le titulaire du compte change (ou réinitialise) le mot de passe d'une de ses boîtes. */
+  async function changePassword(userId, boxId, password) {
+    const b = db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
+    if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
+    if (b.provider_status === 'suspended') throw new HttpError(409, 'Cette boîte est suspendue : réglez votre offre pour la réactiver.', 'mailbox_suspended');
+    if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
+    const pw = validatePassword(password, b.local_part);
+    await pm.modifyUser({ local: b.local_part, domain: b.domain, password: pw });
+    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'key-round', `Mot de passe de ${b.address} modifié`, now());
+    return { ok: true };
+  }
+
+  /**
+   * Connexion de l'application mobile : « adresse pro + mot de passe de la boîte » (ceux choisis par le client sur la plateforme).
+   * Le mot de passe est vérifié chez Purelymail par IMAP ; on ne tente que les adresses connues de la plateforme (jamais un serveur IMAP ouvert à tous).
+   * Réponse : état de la boîte + réglages IMAP/SMTP ; l'application range ensuite l'identifiant dans le Keychain / Keystore et parle directement IMAP/SMTP.
+   * Échecs : 5 mots de passe faux par adresse et par 15 minutes, puis blocage 15 minutes (429).
+   */
+  const failures = new Map();
+  const LOCK_MS = 15 * 60 * 1000, MAX_FAILS = 5;
+  async function appLogin({ email, password }) {
+    const address = String(email || '').trim().toLowerCase();
+    const bad = () => new HttpError(401, 'Adresse ou mot de passe incorrect.', 'invalid_credentials');
+    if (!/^[^@\s]+@[^@\s]+$/.test(address) || typeof password !== 'string' || !password || password.length > 256) throw bad();
+    const f = failures.get(address);
+    if (f && f.n >= MAX_FAILS && Date.now() - f.t < LOCK_MS) throw new HttpError(429, 'Trop de tentatives. Réessayez dans quelques minutes.', 'rate_limited');
+    const b = db.get('SELECT * FROM mailboxes WHERE address = ?', address);
+    if (!b) { await new Promise((r) => setTimeout(r, 150)); throw bad(); }
+    const sub = db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
+    if (b.provider_status === 'suspended' || !sub || ['suspended', 'cancelled'].includes(sub.status)) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
+    if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
+    let result;
+    try { result = await imapLogin({ host: cfg.imap.host, port: cfg.imap.port, secure: cfg.imap.secure, user: address, pass: password }); }
+    catch (e) { log('warn', 'imap_check_failed', { message: e.message }); throw new HttpError(503, 'Le serveur de messagerie ne répond pas. Réessayez.', 'mail_provider_error'); }
+    if (result !== 'ok') {
+      const n = f && Date.now() - f.t < LOCK_MS ? f.n + 1 : 1;
+      failures.set(address, { n, t: Date.now() });
+      if (failures.size > 5000) for (const [k, v] of failures) if (Date.now() - v.t > LOCK_MS) failures.delete(k);
+      throw bad();
+    }
+    failures.delete(address);
+    db.run('UPDATE mailboxes SET last_login = ? WHERE id = ?', new Date().toISOString(), b.id);
+    return { mailbox: { address: b.address, name: b.name, status: 'active' }, ...connection() };
+  }
+
+  /* ---------- Appareils (mots de passe d'application, optionnels) ---------- */
   /** Réglages IMAP / SMTP publiés par Purelymail (https://purelymail.com/docs/setup/technical). */
   const connection = () => ({
     imap: { host: 'imap.purelymail.com', port: 993, security: 'ssl' },
@@ -257,7 +312,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     return { ok: true };
   }
 
-  return { listBoxes, listAliases, listDevices, addDevice, removeDevice, connection, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
+  return { listBoxes, listAliases, listDevices, addDevice, removeDevice, connection, changePassword, appLogin, validatePassword, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };
