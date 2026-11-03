@@ -5,7 +5,9 @@ services:
     name: freda-workspace-api
     runtime: node
     plan: starter
-    buildCommand: npm install --omit=dev
+    region: virginia        # même zone que la base Supabase (us-east-1) : chaque requête fait plusieurs allers-retours vers la base
+    numInstances: 1         # UNE seule instance (observateurs push, limiteurs de débit, tâches périodiques)
+    buildCommand: npm ci --omit=dev
     startCommand: node server.js
     healthCheckPath: /api/health
     envVars:
@@ -13,18 +15,20 @@ services:
         value: 22
       - key: NODE_ENV
         value: production
-      - key: DB_FILE
-        value: /var/data/freda.db
+      - key: DATABASE_URL
+        sync: false          # Supabase : URI du « Session pooler » (Project Settings > Database > Connection string), avec le mot de passe
+      - key: DATABASE_POOL_MAX
+        value: 8
       - key: APP_URL
         value: https://fredaworkspace.com
       - key: API_URL
         value: https://api.fredaworkspace.com
       - key: ALLOWED_ORIGINS
-        value: https://fredaworkspace.com
+        value: https://fredaworkspace.com,https://www.fredaworkspace.com   # toute origine absente d'ici affiche « Failed to fetch » ; ajoutez l'URL *.onrender.com du site si vous l'utilisez
       - key: NAMESILO_MODE
         value: dry-run          # passer à live seulement quand Pay'm est branché et testé
       - key: PAYMENTS_PROVIDER
-        value: demo             # interdit avec NAMESILO_MODE=live
+        value: paym             # « demo » est refusé en production (commandes gratuites)
       - key: MAILER
         value: brevo
       - key: NAMESILO_API_KEY
@@ -45,13 +49,27 @@ services:
         sync: false
       - key: PAYM_CLIENT_SECRET
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_WEBHOOK_SECRET
+        sync: false
+      - key: STRIPE_PUBLISHABLE_KEY
+        sync: false          # clé PUBLIQUE pk_live_… (Embedded Checkout) ; jamais la clé secrète
       - key: BREVO_API_KEY
         sync: false
       - key: PURELYMAIL_API_KEY
         sync: false
+      - key: DATA_KEY
+        generateValue: true     # 32 octets aléatoires, créés une seule fois par Render : copiez-les dans votre gestionnaire de mots de passe
+      - key: APNS_KEY
+        sync: false
+      - key: APNS_KEY_ID
+        sync: false
+      - key: APNS_TEAM_ID
+        sync: false
+      - key: APNS_BUNDLE_ID
+        sync: false
+      - key: FCM_SERVICE_ACCOUNT
+        sync: false
       - key: ALERT_WEBHOOK_URL
         sync: false
-    disk:
-      name: api-data
-      mountPath: /var/data
-      sizeGB: 1

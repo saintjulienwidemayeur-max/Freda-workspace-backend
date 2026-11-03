@@ -46,16 +46,36 @@ function issueToken(cfg, user) {
   return signJwt({ sub: user.id, email: user.email, iat: now, exp: now + cfg.auth.tokenTtlHours * 3600 }, cfg.auth.jwtSecret);
 }
 
+/**
+ * Jeton de session d'une BOÎTE (application mobile) : ne donne accès qu'aux routes /api/mail/* de cette boîte, jamais au compte Freda
+ * (son « sub » n'est pas un utilisateur : le jeton de compte et celui de boîte ne sont pas interchangeables). Invalidé par tokens_valid_after.
+ */
+function issueMailboxToken(cfg, mailbox) {
+  const now = Date.now();
+  return signJwt({ sub: 'mbx:' + mailbox.id, typ: 'mbx', mb: mailbox.id, iatMs: now, iat: Math.floor(now / 1000), exp: Math.floor(now / 1000) + cfg.push.sessionDays * 86400 }, cfg.auth.jwtSecret);
+}
+function createMailboxAuthenticator(cfg, db) {
+  return async function authenticateMailbox(req) {
+    const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
+    if (!m) throw new AuthError();
+    const p = verifyJwt(m[1], cfg.auth.jwtSecret);
+    if (p.typ !== 'mbx' || !p.mb) throw new AuthError();
+    const b = await db.get('SELECT * FROM mailboxes WHERE id = ?', String(p.mb));
+    if (!b || b.provider_status !== 'active' || !(p.iatMs > b.tokens_valid_after)) throw new AuthError('Session expirée : reconnectez-vous.');
+    return b;
+  };
+}
+
 /** Retourne authenticate(req) -> { id, email }. En mode « demo » (développement uniquement) l'en-tête X-Demo-User crée/charge l'utilisateur. */
 function createAuthenticator(cfg, db) {
-  return function authenticate(req) {
+  return async function authenticate(req) {
     if (cfg.auth.mode === 'demo') {
       const email = String(req.headers['x-demo-user'] || '').toLowerCase();
       if (!email) throw new AuthError();
-      let u = db.get('SELECT id, email FROM users WHERE email = ?', email);
+      let u = await db.get('SELECT id, email FROM users WHERE email = ?', email);
       if (!u) {
         const id = 'usr_' + crypto.randomBytes(8).toString('hex');
-        db.run('INSERT INTO users (id, email, name, created_at) VALUES (?,?,?,?)', id, email, email.split('@')[0], new Date().toISOString());
+        await db.run('INSERT INTO users (id, email, name, created_at) VALUES (?,?,?,?)', id, email, email.split('@')[0], new Date().toISOString());
         u = { id, email };
       }
       return u;
@@ -63,10 +83,10 @@ function createAuthenticator(cfg, db) {
     const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
     if (!m) throw new AuthError();
     const payload = verifyJwt(m[1], cfg.auth.jwtSecret);
-    const u = db.get('SELECT id, email FROM users WHERE id = ?', String(payload.sub));
+    const u = await db.get('SELECT id, email FROM users WHERE id = ?', String(payload.sub));
     if (!u) throw new AuthError();                                      // compte supprimé : jeton refusé
     return u;
   };
 }
 
-module.exports = { AuthError, hashPassword, verifyPassword, signJwt, verifyJwt, issueToken, createAuthenticator };
+module.exports = { AuthError, hashPassword, verifyPassword, signJwt, verifyJwt, issueToken, createAuthenticator, issueMailboxToken, createMailboxAuthenticator };

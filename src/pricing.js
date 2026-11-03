@@ -5,6 +5,12 @@ function sellPrice(cost, pricing) {
   return Math.round((Math.ceil(raw) - 0.01) * 100) / 100;
 }
 
+/** Prix de référence barré, purement affichable (jamais facturé) : prix de vente + pourcentage, arrondi à x.99. null si désactivé. */
+function compareAt(price, pct) {
+  if (!(pct > 0)) return null;
+  return Math.round((Math.ceil(price * (1 + pct / 100)) - 0.01) * 100) / 100;
+}
+
 /** 1re année au prix d'enregistrement, années suivantes au prix de renouvellement (comme le frontend). */
 function totalFor(entry, years) {
   return Math.round((entry.price + entry.renew * (Math.max(1, years) - 1)) * 100) / 100;
@@ -20,6 +26,7 @@ function createPriceBook({ registrar, cfg }) {
       const c = costs[tld];
       if (!c || !(c.registration > 0)) continue;       // extension non vendue chez le registraire : on ne la propose pas
       book[tld] = { tld, cost: c.registration, costRenew: c.renew, price: sellPrice(c.registration, cfg.pricing), renew: sellPrice(c.renew, cfg.pricing) };
+      book[tld].compare = compareAt(book[tld].price, cfg.pricing.comparePercent);
     }
     cache = book; at = Date.now();
     return book;
@@ -27,4 +34,4 @@ function createPriceBook({ registrar, cfg }) {
   return { load, invalidate() { cache = null; } };
 }
 
-module.exports = { sellPrice, totalFor, createPriceBook };
+module.exports = { compareAt, sellPrice, totalFor, createPriceBook };

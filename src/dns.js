@@ -54,25 +54,25 @@ function defaultResolve(ip, domain, rrtype) {
 function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
   const rec = (r) => ({ id: r.id, type: r.type, name: r.name, value: r.value, ttl: r.ttl, priority: r.priority ?? undefined, managed: !!r.managed, role: r.role || undefined });
 
-  function ownDomain(userId, name) {
-    const d = db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', userId, String(name || '').toLowerCase());
+  async function ownDomain(userId, name) {
+    const d = await db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', userId, String(name || '').toLowerCase());
     if (!d) throw new HttpError(404, 'Domaine introuvable.', 'not_found');
     return d;
   }
   const usesRegistrarDns = (d) => !d.external && d.dns_mode === 'registrar';
-  const list = (userId, name) => db.all('SELECT * FROM dns_records WHERE domain_id = ? ORDER BY CASE type WHEN \'A\' THEN 1 WHEN \'AAAA\' THEN 2 WHEN \'CNAME\' THEN 3 WHEN \'MX\' THEN 4 ELSE 5 END, name', ownDomain(userId, name).id).map(rec);
+  const list = async (userId, name) => (await db.all('SELECT * FROM dns_records WHERE domain_id = ? ORDER BY CASE type WHEN \'A\' THEN 1 WHEN \'AAAA\' THEN 2 WHEN \'CNAME\' THEN 3 WHEN \'MX\' THEN 4 ELSE 5 END, name', (await ownDomain(userId, name)).id)).map(rec);
 
   async function save(userId, name, input) {
-    const d = ownDomain(userId, name);
+    const d = await ownDomain(userId, name);
     const v = validateRecord(input);
-    const count = db.get('SELECT COUNT(*) AS n FROM dns_records WHERE domain_id = ?', d.id).n;
+    const count = (await db.get('SELECT COUNT(*) AS n FROM dns_records WHERE domain_id = ?', d.id)).n;
     let existing = null;
     if (input.id) {
-      existing = db.get('SELECT * FROM dns_records WHERE id = ? AND domain_id = ?', String(input.id), d.id);
+      existing = await db.get('SELECT * FROM dns_records WHERE id = ? AND domain_id = ?', String(input.id), d.id);
       if (!existing) throw new HttpError(404, 'Enregistrement introuvable.', 'not_found');
       if (existing.managed && (existing.type !== v.type || existing.name !== v.name)) throw new HttpError(400, 'Les enregistrements email gérés par Freda ne peuvent pas changer de type ou de nom.', 'managed_record');
     } else if (count >= 100) throw new HttpError(400, 'Limite de 100 enregistrements atteinte.', 'limit');
-    if (!existing && db.get('SELECT 1 FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? AND value = ?', d.id, v.type, v.name, v.value)) throw new HttpError(409, 'Cet enregistrement existe déjà.', 'duplicate');
+    if (!existing && (await db.get('SELECT 1 FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? AND value = ?', d.id, v.type, v.name, v.value))) throw new HttpError(409, 'Cet enregistrement existe déjà.', 'duplicate');
     let providerId = existing ? existing.provider_id : '';
     if (usesRegistrarDns(d)) {
       try {
@@ -81,28 +81,28 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
       } catch (e) { log('error', 'dns_provider_failed', { code: e.code }); throw new HttpError(502, 'Le serveur DNS n’a pas accepté la modification. Réessayez.', 'dns_provider_error'); }
     }
     const rid = existing ? existing.id : id();
-    if (existing) db.run('UPDATE dns_records SET type=?, name=?, value=?, ttl=?, priority=?, provider_id=? WHERE id=?', v.type, v.name, v.value, v.ttl, v.priority, providerId, rid);
-    else db.run('INSERT INTO dns_records (id, domain_id, type, name, value, ttl, priority, managed, role, provider_id) VALUES (?,?,?,?,?,?,?,?,?,?)', rid, d.id, v.type, v.name, v.value, v.ttl, v.priority, input.managed ? 1 : 0, input.role || '', providerId);
-    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'server-cog', `Enregistrement ${v.type} « ${v.name} » ${existing ? 'mis à jour' : 'ajouté'} sur ${d.name}`, new Date().toISOString().slice(0, 16).replace('T', ' '));
-    return rec(db.get('SELECT * FROM dns_records WHERE id = ?', rid));
+    if (existing) await db.run('UPDATE dns_records SET type=?, name=?, value=?, ttl=?, priority=?, provider_id=? WHERE id=?', v.type, v.name, v.value, v.ttl, v.priority, providerId, rid);
+    else await db.run('INSERT INTO dns_records (id, domain_id, type, name, value, ttl, priority, managed, role, provider_id) VALUES (?,?,?,?,?,?,?,?,?,?)', rid, d.id, v.type, v.name, v.value, v.ttl, v.priority, input.managed ? 1 : 0, input.role || '', providerId);
+    await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'server-cog', `Enregistrement ${v.type} « ${v.name} » ${existing ? 'mis à jour' : 'ajouté'} sur ${d.name}`, new Date().toISOString().slice(0, 16).replace('T', ' '));
+    return rec(await db.get('SELECT * FROM dns_records WHERE id = ?', rid));
   }
 
   async function remove(userId, name, recordId) {
-    const d = ownDomain(userId, name);
-    const r = db.get('SELECT * FROM dns_records WHERE id = ? AND domain_id = ?', String(recordId), d.id);
+    const d = await ownDomain(userId, name);
+    const r = await db.get('SELECT * FROM dns_records WHERE id = ? AND domain_id = ?', String(recordId), d.id);
     if (!r) throw new HttpError(404, 'Enregistrement introuvable.', 'not_found');
     if (r.managed) throw new HttpError(400, 'Cet enregistrement est nécessaire au fonctionnement de la messagerie. Utilisez « Réparer » pour le restaurer s’il est modifié.', 'managed_record');
     if (usesRegistrarDns(d) && r.provider_id) {
       try { await registrar.dnsDelete(d.name, r.provider_id); } catch (e) { log('error', 'dns_provider_failed', { code: e.code }); throw new HttpError(502, 'Le serveur DNS n’a pas accepté la suppression. Réessayez.', 'dns_provider_error'); }
     }
-    db.run('DELETE FROM dns_records WHERE id = ?', r.id);
+    await db.run('DELETE FROM dns_records WHERE id = ?', r.id);
     return { ok: true };
   }
 
   /** Ajoute les enregistrements e-mail manquants. Retourne le nombre ajouté. */
   async function autofix(userId, name, { quiet = false } = {}) {
-    const d = ownDomain(userId, name);
-    const have = db.all('SELECT * FROM dns_records WHERE domain_id = ?', d.id);
+    const d = await ownDomain(userId, name);
+    const have = await db.all('SELECT * FROM dns_records WHERE domain_id = ?', d.id);
     let added = 0;
     for (const t of MAIL_TEMPLATE) {
       if (have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value)) continue;
@@ -111,8 +111,20 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
       await save(userId, name, { ...t, id: stale && stale.id, managed: true, ttl: 3600 });
       added++;
     }
-    if (added && !quiet) db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'wand-sparkles', `Configuration email réparée sur ${d.name} (${added} enregistrement${added > 1 ? 's' : ''})`, new Date().toISOString().slice(0, 16).replace('T', ' '));
+    if (added && !quiet) await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'wand-sparkles', `Configuration email réparée sur ${d.name} (${added} enregistrement${added > 1 ? 's' : ''})`, new Date().toISOString().slice(0, 16).replace('T', ' '));
     return { added };
+  }
+
+  /** Publie le TXT de propriété Purelymail (valeur fournie par getOwnershipCode). Zone du registrar : poussé chez NameSilo ; domaine externe : à ajouter par le client. */
+  async function ensureOwnership(userId, name, value) {
+    const d = await ownDomain(userId, name);
+    if ((await db.get('SELECT 1 FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? AND value = ?', d.id, 'TXT', '@', value))) return;
+    await save(userId, name, { type: 'TXT', name: '@', value, ttl: 3600, managed: true, role: 'OWNERSHIP' });
+  }
+
+  /** Le TXT de propriété est-il visible dans le DNS public (premier résolveur) ? Sert à dire au client si sa vérification a une chance d'aboutir. */
+  async function txtVisible(name, value) {
+    try { return (await resolve(cfg.dns.resolvers[0], name, 'TXT')).some((a) => a.join('') === value); } catch (e) { return false; }
   }
 
   /** Santé de la zone (même logique que le frontend). */
@@ -129,7 +141,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
 
   /** Propagation réelle : le MX de Freda Mail est-il visible depuis plusieurs résolveurs publics ? */
   async function propagation(userId, name) {
-    const d = ownDomain(userId, name);
+    const d = await ownDomain(userId, name);
     return Promise.all(cfg.dns.resolvers.map(async (ip) => {
       const t0 = Date.now();
       try { const mx = await resolve(ip, d.name, 'MX'); return { resolver: resolverName(ip), ip, ok: mx.some((m) => /purelymail/i.test(m.exchange)), ms: Date.now() - t0 }; }
@@ -139,33 +151,33 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
   const resolverName = (ip) => ({ '8.8.8.8': 'Google', '1.1.1.1': 'Cloudflare', '9.9.9.9': 'Quad9', '208.67.222.222': 'OpenDNS' }[ip] || ip);
 
   /* ---------- Domaines existants (hébergés ailleurs) ---------- */
-  function connect(userId, rawDomain, mode = 'records') {
+  async function connect(userId, rawDomain, mode = 'records') {
     const name = String(rawDomain || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/.*$/, '');
     if (!FQDN.test(name)) throw new HttpError(400, 'Entrez un domaine complet, par exemple monentreprise.com.', 'invalid_domain');
     if (!['nameservers', 'records'].includes(mode)) throw new HttpError(400, 'Méthode inconnue.', 'invalid_mode');
-    const mine = db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', userId, name);
+    const mine = await db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', userId, name);
     if (mine && mine.status !== 'pending') throw new HttpError(409, 'Ce domaine est déjà dans votre espace.', 'duplicate');
-    if (db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", name)) throw new HttpError(409, 'Ce domaine appartient déjà à un autre compte Freda.', 'domain_taken');
+    if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", name))) throw new HttpError(409, 'Ce domaine appartient déjà à un autre compte Freda.', 'domain_taken');
     let did;
-    db.tx(() => {
-      if (mine) { did = mine.id; db.run('UPDATE domains SET dns_mode = ? WHERE id = ?', mode, did); }
+    await db.tx(async () => {
+      if (mine) { did = mine.id; await db.run('UPDATE domains SET dns_mode = ? WHERE id = ?', mode, did); }
       else {
         did = 'dom_' + crypto.randomBytes(8).toString('hex');
-        const first = !db.get('SELECT 1 FROM domains WHERE user_id = ?', userId);
-        db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, auto_renew, locked, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+        const first = !(await db.get('SELECT 1 FROM domains WHERE user_id = ?', userId));
+        await db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, auto_renew, locked, is_primary, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
           did, userId, name, 'pending', 1, mode, new Date().toISOString().slice(0, 10), 0, 0, first ? 1 : 0, new Date().toISOString());
-        db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'link-2', `Domaine existant ${name} ajouté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
+        await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'link-2', `Domaine existant ${name} ajouté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
       }
-      const have = db.all('SELECT * FROM dns_records WHERE domain_id = ?', did);
+      const have = await db.all('SELECT * FROM dns_records WHERE domain_id = ?', did);
       for (const t of MAIL_TEMPLATE) if (!have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value))
-        db.run('INSERT INTO dns_records (id, domain_id, type, name, value, ttl, priority, managed, role) VALUES (?,?,?,?,?,?,?,?,?)', id(), did, t.type, t.name, t.value, 3600, t.priority ?? null, 1, t.role);
+        await db.run('INSERT INTO dns_records (id, domain_id, type, name, value, ttl, priority, managed, role) VALUES (?,?,?,?,?,?,?,?,?)', id(), did, t.type, t.name, t.value, 3600, t.priority ?? null, 1, t.role);
     });
     return { domain: name, mode, nameservers: cfg.namesilo.nameservers, records: MAIL_TEMPLATE, nameserversAvailable: cfg.namesilo.nameservers.length >= 2 };
   }
 
   /** Vérifie la connexion en DNS réel : serveurs de noms (mode nameservers) ou enregistrements e-mail (mode records). */
   async function verify(userId, name) {
-    const d = ownDomain(userId, name);
+    const d = await ownDomain(userId, name);
     if (!d.external) return { connected: true, missing: [] };
     if (d.status === 'active') return { connected: true, missing: [] };
     const ip = cfg.dns.resolvers[0];
@@ -180,16 +192,23 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
         if (!mx.some((m) => /purelymail/i.test(m.exchange))) missing.push('MX');
         const txt = (await resolve(ip, d.name, 'TXT').catch(() => [])).map((a) => a.join(''));
         if (!txt.some((t) => t.startsWith('v=spf1') && t.includes('purelymail'))) missing.push('SPF');
+        // DKIM : sans les 3 CNAME, le courrier part mais atterrit en spam ; on ne déclare donc pas le domaine « connecté » avant.
+        let dkimOk = true;
+        for (const r of MAIL_TEMPLATE.filter((x) => x.role === 'DKIM')) {
+          const got = await resolve(ip, r.name + '.' + d.name, 'CNAME').catch(() => []);
+          if (!got.some((g) => String(g).toLowerCase().replace(/\.$/, '') === r.value.toLowerCase())) dkimOk = false;
+        }
+        if (!dkimOk) missing.push('DKIM');
       }
     } catch (e) { if (e instanceof HttpError) throw e; missing.push('DNS'); }
     if (missing.length) return { connected: false, missing };
-    if (db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending' AND id <> ?", d.name, d.id)) throw new HttpError(409, 'Ce domaine a déjà été vérifié par un autre compte Freda.', 'domain_taken');
-    db.run("UPDATE domains SET status = 'active', connected_at = ? WHERE id = ?", new Date().toISOString().slice(0, 10), d.id);
-    db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'badge-check', `Domaine ${d.name} connecté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
+    if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending' AND id <> ?", d.name, d.id))) throw new HttpError(409, 'Ce domaine a déjà été vérifié par un autre compte Freda.', 'domain_taken');
+    await db.run("UPDATE domains SET status = 'active', connected_at = ? WHERE id = ?", new Date().toISOString().slice(0, 10), d.id);
+    await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'badge-check', `Domaine ${d.name} connecté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
     return { connected: true, missing: [] };
   }
 
-  return { list, save, remove, autofix, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
+  return { list, save, remove, autofix, ensureOwnership, txtVisible, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
 }
 
 module.exports = { createDns, MAIL_TEMPLATE, validateRecord };

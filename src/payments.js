@@ -12,6 +12,7 @@
  * Cartes bancaires : aucun processeur d'acquisition n'est branché (Maplerad sert à émettre des cartes, pas à encaisser).
  */
 const { HttpError } = require('./errors');
+const { createStripe } = require('./stripe');
 
 class PaymentError extends Error {
   constructor(message, status = 402) { super(message); this.name = 'PaymentError'; this.status = status; }
@@ -34,7 +35,7 @@ function createPaym(cfg, log) {
   const { clientId, clientSecret, baseUrl } = cfg.payments.paym;
   async function post(endpoint, body, retry = 0) {
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
-    if (res.status === 429 && retry < 1) { await new Promise((r) => setTimeout(r, 2000)); return post(endpoint, body, retry + 1); }
+    if (res.status === 429 && retry < 1) { await new Promise((r) => setTimeout(r, 2000)); return await post(endpoint, body, retry + 1); }
     let data;
     try { data = await res.json(); } catch (e) { throw new PaymentError('Le service de paiement est indisponible. Réessayez.', 502); }
     if (!res.ok) { log('error', 'paym_error', { endpoint, status: res.status }); throw new PaymentError(data.message || data.error || 'Le service de paiement a refusé la demande.', res.status >= 500 ? 502 : 402); }
@@ -60,10 +61,37 @@ function createPaym(cfg, log) {
   };
 }
 
-function createPayments(cfg, log = () => {}) {
-  if (cfg.payments.provider === 'paym') return createPaym(cfg, log);
-  if (cfg.payments.provider === 'demo') return createDemo();
-  throw new Error('PAYMENTS_PROVIDER inconnu : ' + cfg.payments.provider);
+/**
+ * Routeur : la carte bancaire passe par Stripe (si STRIPE_SECRET_KEY est définie), MonCash / NatCash par Pay'm.
+ * La vérification et le remboursement suivent le moyen de paiement de la commande.
+ */
+function createPayments(cfg, log = () => {}, { db } = {}) {
+  let base;
+  if (cfg.payments.provider === 'paym') base = createPaym(cfg, log);
+  else if (cfg.payments.provider === 'demo') base = createDemo();
+  else throw new Error('PAYMENTS_PROVIDER inconnu : ' + cfg.payments.provider);
+  if (!cfg.payments.stripe.secretKey || !db) return base;
+  const stripe = createStripe({ cfg, db, log });
+  const isCard = (order) => order && order.payment_method === 'card';
+  return {
+    ...base,
+    stripe,
+    cards: true,
+    async create(a) {
+      if (a.method !== 'card') return base.create(a);
+      if (!(a.amount >= 0.5)) throw new PaymentError('Montant minimum par carte : 0,50 $.', 400);
+      try {
+        return a.methodId ? await stripe.chargeSaved({ ...a, allowRedirect: !a.system }) : await stripe.createCheckout(a);
+      } catch (e) {
+        if (e instanceof HttpError) throw e;
+        if (e.name === 'CardDeclined') throw new PaymentError(e.message, 402);
+        log('error', 'stripe_create_failed', { code: e.code, status: e.status });
+        throw new PaymentError('Le paiement par carte est momentanément indisponible. Réessayez ou utilisez MonCash.', 502);
+      }
+    },
+    verify: async (a) => (isCard(a.order) ? (await stripe.verify(a)) : base.verify(a)),
+    refund: async (a) => (isCard(a.order) ? (await stripe.refund(a)) : base.refund(a)),
+  };
 }
 
 module.exports = { createPayments, PaymentError, RefundNotSupported };

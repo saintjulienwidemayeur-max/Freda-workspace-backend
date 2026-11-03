@@ -15,48 +15,48 @@ async function withDomain() {
 test('rappels d’expiration : 30 / 14 / 7 / 1 jours, chacun envoyé une seule fois, lien vers le site (paiement créé au clic)', async () => {
   const t = await withDomain();
   const run = () => t.app.app.jobs.run();
-  t.db.run('UPDATE domains SET expires_at = ?', days(40)); t.mailer.sent.length = 0;
+  await t.db.run('UPDATE domains SET expires_at = ?', days(40)); t.mailer.sent.length = 0;
   await run(); assert.strictEqual(t.mailer.sent.length, 0, 'trop tôt');
-  t.db.run('UPDATE domains SET expires_at = ?', days(29)); await run();
+  await t.db.run('UPDATE domains SET expires_at = ?', days(29)); await run();
   assert.strictEqual(t.mailer.sent.filter((m) => /expire dans/.test(m.subject)).length, 1);
   assert.match(t.mailer.sent.at(-1).text, /https:\/\/site\.test\/espace\/domaines\.html\?renew=neuf\.com/);
   await run(); assert.strictEqual(t.mailer.sent.filter((m) => /expire dans/.test(m.subject)).length, 1, 'pas de doublon');
-  t.db.run('UPDATE domains SET expires_at = ?', days(6)); await run();
+  await t.db.run('UPDATE domains SET expires_at = ?', days(6)); await run();
   assert.strictEqual(t.mailer.sent.filter((m) => /expire dans/.test(m.subject)).length, 2);
-  t.db.run('UPDATE domains SET expires_at = ?', days(-1)); await run();
-  assert.strictEqual(t.db.get('SELECT status FROM domains').status, 'expired');
+  await t.db.run('UPDATE domains SET expires_at = ?', days(-1)); await run();
+  assert.strictEqual((await t.db.get('SELECT status FROM domains')).status, 'expired');
   assert.ok(t.mailer.sent.some((m) => /a expiré/.test(m.subject)));
 });
 
 test('rappels : désactivés si le client coupe le renouvellement ; ignorés pour les domaines dry-run et externes', async () => {
   const t = await withDomain();
-  t.db.run('UPDATE domains SET expires_at = ?, auto_renew = 0', days(5)); t.mailer.sent.length = 0;
+  await t.db.run('UPDATE domains SET expires_at = ?, auto_renew = 0', days(5)); t.mailer.sent.length = 0;
   await t.app.app.jobs.run(); assert.strictEqual(t.mailer.sent.length, 0);
-  t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1');
+  await t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1');
   await t.app.app.jobs.run(); assert.strictEqual(t.mailer.sent.length, 0);
 });
 
 test('un domaine renouvelé repart de zéro : les rappels reviennent l’année suivante', async () => {
   const t = await withDomain();
-  t.db.run('UPDATE domains SET expires_at = ?, renewal_notices = 15', days(300));
+  await t.db.run('UPDATE domains SET expires_at = ?, renewal_notices = 15', days(300));
   t.mailer.sent.length = 0;
-  t.db.run('UPDATE domains SET renewal_notices = 0');
-  t.db.run('UPDATE domains SET expires_at = ?', days(20)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE domains SET renewal_notices = 0');
+  await t.db.run('UPDATE domains SET expires_at = ?', days(20)); await t.app.app.jobs.run();
   assert.ok(t.mailer.sent.some((m) => /expire dans/.test(m.subject)));
 });
 
 test('offre Freda Mail : rappels à 5 et 1 jours, past_due à l’échéance, suspended après 7 jours', async () => {
   const t = await withDomain();
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });
-  const status = () => t.db.get('SELECT status FROM subscriptions').status;
+  const status = async () => (await t.db.get('SELECT status FROM subscriptions')).status;
   t.mailer.sent.length = 0;
-  t.db.run('UPDATE subscriptions SET renews_at = ?', days(4)); await t.app.app.jobs.run();
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', days(4)); await t.app.app.jobs.run();
   assert.ok(t.mailer.sent.some((m) => /se renouvelle dans/.test(m.subject)));
-  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-1)); await t.app.app.jobs.run();
-  assert.strictEqual(status(), 'past_due');
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', days(-1)); await t.app.app.jobs.run();
+  assert.strictEqual(await status(), 'past_due');
   assert.ok(t.mailer.sent.some((m) => /à régler/.test(m.subject)));
-  t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await t.app.app.jobs.run();
-  assert.strictEqual(status(), 'suspended');
+  await t.db.run('UPDATE subscriptions SET renews_at = ?', days(-9)); await t.app.app.jobs.run();
+  assert.strictEqual(await status(), 'suspended');
 });
 
 test('POST /admin/jobs/run : réservé au jeton administrateur (comparaison en temps constant)', async () => {
@@ -71,7 +71,7 @@ test('POST /admin/jobs/run : réservé au jeton administrateur (comparaison en t
 test('workspace : forme complète attendue par le frontend ; isolation entre comptes', async () => {
   const t = await withDomain();
   const w = await (await t.user('/api/workspace')).json();
-  assert.deepStrictEqual(Object.keys(w).sort(), ['activity', 'dns', 'domains', 'invoices', 'mailboxes', 'aliases', 'paymentMethods', 'plan', 'user'].sort());
+  assert.deepStrictEqual(Object.keys(w).sort(), ['activity', 'dns', 'dnsConfig', 'domains', 'invoices', 'mailboxes', 'aliases', 'paymentMethods', 'plan', 'user'].sort());
   assert.strictEqual(w.plan, null);
   assert.strictEqual(w.domains[0].primary, true);
   assert.ok(w.activity.some((a) => /neuf\.com enregistré/.test(a.text)));

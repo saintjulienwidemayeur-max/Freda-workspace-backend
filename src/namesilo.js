@@ -47,12 +47,24 @@ function createClient(cfg, fetchImpl = fetch) {
     return reply;
   }
 
-  return {
+  const client = {
     call,
 
     /** Disponibilité de plusieurs domaines à la fois (checkRegisterAvailability, 200 maximum). */
     async checkAvailability(domains) {
-      const reply = await call('checkRegisterAvailability', { domains: domains.join(',') });
+      // NameSilo vérifie les noms un par un : un gros lot dépasse le délai. Lots de 10 en parallèle, résultats fusionnés.
+      if (domains.length > 10) {
+        const parts = [];
+        for (let i = 0; i < domains.length; i += 10) parts.push(domains.slice(i, i + 10));
+        const rs = [];
+        for (const p of parts) rs.push(await client.checkAvailability(p));   // un lot à la fois : en parallèle NameSilo répond 503
+        return { available: rs.flatMap((r) => r.available), unavailable: rs.flatMap((r) => r.unavailable), invalid: rs.flatMap((r) => r.invalid) };
+      }
+      let reply;
+      for (let attempt = 0; ; attempt++) {   // lecture sans effet de bord : on peut réessayer (NameSilo répond 503 quand il est saturé)
+        try { reply = await call('checkRegisterAvailability', { domains: domains.join(',') }); break; }
+        catch (e) { if (attempt >= 2 || !(e.code === 503 || e.code === 429 || e.code === 'NETWORK')) throw e; await new Promise((r) => setTimeout(r, 700 * (attempt + 1))); }
+      }
       const available = asArray(reply.available).map((d) => (typeof d === 'string' ? { domain: d } : d))
         .map((d) => ({
           domain: String(d.domain).toLowerCase(),
@@ -157,6 +169,7 @@ function createClient(cfg, fetchImpl = fetch) {
       return asArray(r.email).map((x) => ({ email: x.email_address, domains: Number(x.domains), verified: String(x.verified).toLowerCase() === 'yes' }));
     },
   };
+  return client;
 }
 
 module.exports = { createClient, NameSiloError };
