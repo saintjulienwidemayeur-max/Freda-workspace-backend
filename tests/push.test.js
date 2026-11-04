@@ -105,7 +105,8 @@ test('aperçu (par défaut) : expéditeur, objet décodés (RFC 2047) et début 
   await waitFor(() => t.sent.length === 1);
   assert.strictEqual(t.sent[0].msg.title, 'Alice Dupont');
   assert.strictEqual(t.sent[0].msg.body, 'Facture de janvier\nBonjour Marie, voici la facture du mois. Merci de régler avant vendredi.');
-  assert.strictEqual(t.sent[0].msg.data.from, 'Alice Dupont');
+  assert.strictEqual(t.sent[0].msg.data.sender, 'Alice Dupont');
+  for (const k of Object.keys(t.sent[0].msg.data)) assert.ok(!/^(from|google|gcm)/i.test(k), 'clé réservée par FCM : ' + k);
   t.push.stop();
 });
 
