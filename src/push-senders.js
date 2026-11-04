@@ -84,7 +84,7 @@ function createFcm(cfg) {
       const message = {
         token: deviceToken, notification: { title: clip(title, 120), body: clip(body, 240) },
         data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-        android: { priority: 'HIGH', ttl: '3600s', notification: { channel_id: 'mail', ...(collapseId ? { tag: clip(collapseId, 64) } : {}) } },
+        android: { priority: 'HIGH', ttl: '3600s', notification: { channel_id: 'courrier', sound: 'default', ...(collapseId ? { tag: clip(collapseId, 64) } : {}) } },
       };
       let r = await post(message, false);
       if (r.status === 401) r = await post(message, true);
