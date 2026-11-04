@@ -65,6 +65,9 @@ function createApp(deps) {
 
   const photos = createPhotos({ db });
 
+  /** decodeURIComponent sans 500 : un pourcentage mal formé est une erreur 400. */
+  const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { throw new HttpError(400, 'Adresse de requête invalide.', 'bad_request'); } };
+
   const L = { search: createLimiter(60, 60_000), auth: createLimiter(12, 60_000), buy: createLimiter(10, 60_000), write: createLimiter(120, 60_000), errors: createLimiter(20, 60_000) };
 
   /* Table de routes : [méthode, motif, gestionnaire, options]. Les segments « :nom » ne contiennent pas de « / » (les noms de domaine contiennent des points). */
@@ -145,22 +148,22 @@ function createApp(deps) {
   /* ----- domaines ----- */
   route('GET', '/api/domains', async (c) => ({ domains: (await workspace(c.user.id)).domains }), auth);
   route('POST', '/api/domains/connect', async (c) => { const b = await c.body(); return dns.connect(c.user.id, b.domain, b.mode); }, auth);
-  route('PATCH', '/api/domains/:d', async (c, p) => (await settings.update(c.user.id, decodeURIComponent(p[0]), await c.body())), auth);
-  route('POST', '/api/domains/:d/verify', async (c, p) => { limit(L.write, c.user.id); return await dns.verify(c.user.id, decodeURIComponent(p[0])); }, auth);
-  route('POST', '/api/domains/:d/auth-code', async (c, p) => { limit(L.buy, c.user.id); return await settings.requestTransferCode(c.user.id, decodeURIComponent(p[0])); }, auth);
+  route('PATCH', '/api/domains/:d', async (c, p) => (await settings.update(c.user.id, dec(p[0]), await c.body())), auth);
+  route('POST', '/api/domains/:d/verify', async (c, p) => { limit(L.write, c.user.id); return await dns.verify(c.user.id, dec(p[0])); }, auth);
+  route('POST', '/api/domains/:d/auth-code', async (c, p) => { limit(L.buy, c.user.id); return await settings.requestTransferCode(c.user.id, dec(p[0])); }, auth);
 
   /* ----- DNS ----- */
-  route('GET', '/api/domains/:d/dns', async (c, p) => (await dns.list(c.user.id, decodeURIComponent(p[0]))), auth);
-  route('POST', '/api/domains/:d/dns', async (c, p) => { limit(L.write, c.user.id); return await dns.save(c.user.id, decodeURIComponent(p[0]), await c.body()); }, auth);
-  route('PATCH', '/api/domains/:d/dns/:id', async (c, p) => { limit(L.write, c.user.id); return await dns.save(c.user.id, decodeURIComponent(p[0]), { ...(await c.body()), id: p[1] }); }, auth);
-  route('DELETE', '/api/domains/:d/dns/:id', async (c, p) => (await dns.remove(c.user.id, decodeURIComponent(p[0]), p[1])), auth);
-  route('POST', '/api/domains/:d/dns/autofix', async (c, p) => { limit(L.write, c.user.id); return await dns.autofix(c.user.id, decodeURIComponent(p[0])); }, auth);
-  route('GET', '/api/domains/:d/dns/check', async (c, p) => (await dns.propagation(c.user.id, decodeURIComponent(p[0]))), auth);
+  route('GET', '/api/domains/:d/dns', async (c, p) => (await dns.list(c.user.id, dec(p[0]))), auth);
+  route('POST', '/api/domains/:d/dns', async (c, p) => { limit(L.write, c.user.id); return await dns.save(c.user.id, dec(p[0]), await c.body()); }, auth);
+  route('PATCH', '/api/domains/:d/dns/:id', async (c, p) => { limit(L.write, c.user.id); return await dns.save(c.user.id, dec(p[0]), { ...(await c.body()), id: p[1] }); }, auth);
+  route('DELETE', '/api/domains/:d/dns/:id', async (c, p) => (await dns.remove(c.user.id, dec(p[0]), p[1])), auth);
+  route('POST', '/api/domains/:d/dns/autofix', async (c, p) => { limit(L.write, c.user.id); return await dns.autofix(c.user.id, dec(p[0])); }, auth);
+  route('GET', '/api/domains/:d/dns/check', async (c, p) => (await dns.propagation(c.user.id, dec(p[0]))), auth);
 
   /* ----- Freda Mail ----- */
   route('GET', '/api/mailboxes', async (c) => ({ mailboxes: await mail.listBoxes(c.user.id), aliases: await mail.listAliases(c.user.id) }), auth);
   route('POST', '/api/mailboxes', async (c) => { limit(L.write, c.user.id); return await mail.createBox(c.user.id, await c.body()); }, auth);
-  route('GET', '/api/domains/:d/mail-ownership', async (c, p) => (await mail.ownership(c.user.id, decodeURIComponent(p[0]))), auth);
+  route('GET', '/api/domains/:d/mail-ownership', async (c, p) => (await mail.ownership(c.user.id, dec(p[0]))), auth);
   route('GET', '/api/mail/config', async () => mail.connection(), auth);
   /* Connexion de l'application mobile : adresse pro + mot de passe de la boîte (public, limité par IP et par adresse) */
   route('POST', '/api/mail/login', async (c) => { limit(L.auth, c.ip); return await mail.appLogin(await c.body(2048)); });
@@ -175,7 +178,7 @@ function createApp(deps) {
   route('POST', '/api/mail/photos', async (c) => { limit(L.search, c.mailbox.id); return await photos.lookup((await c.body(8192)).addresses); }, mbx);
   route('GET', '/api/mail/photo/:address', async (c, p) => {
     limit(L.search, c.mailbox.id);
-    const ph = await photos.get(decodeURIComponent(p[0]));
+    const ph = await photos.get(dec(p[0]));
     if (!ph) throw new HttpError(404, 'Pas de photo.', 'no_photo');
     return { binary: { type: ph.type, data: ph.data, etag: '"' + ph.version + '"' } };
   }, mbx);
@@ -231,8 +234,8 @@ function createApp(deps) {
       const out = await matched.handler(ctx, params);
       if (out && out.binary) {
         const b = out.binary;
-        if (req.headers['if-none-match'] === b.etag) { res.writeHead(304, { ETag: b.etag, ...cors }); return res.end(); }
-        res.writeHead(200, { 'Content-Type': b.type, 'Content-Length': b.data.length, ETag: b.etag, 'Cache-Control': 'private, max-age=300', 'X-Content-Type-Options': 'nosniff', ...cors });
+        if (req.headers['if-none-match'] === b.etag) { res.writeHead(304, { ETag: b.etag, 'Cache-Control': 'private, max-age=60', ...cors }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': b.type, 'Content-Length': b.data.length, ETag: b.etag, 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', ...cors });
         return res.end(b.data);
       }
       if (out && out.redirect) { res.writeHead(302, { Location: out.redirect, 'Cache-Control': 'no-store', ...cors }); return res.end(); }
