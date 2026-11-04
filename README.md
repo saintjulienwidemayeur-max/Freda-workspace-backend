@@ -37,6 +37,15 @@ Parcours : le client choisit **le mot de passe de sa boîte** sur la plateforme 
 Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-mail, jamais stocké** : validé avant le paiement, gardé chiffré (AES-256-GCM, `DATA_KEY`) le temps de la commande puis supprimé (aussi purgé si la commande échoue). Suspension : la boîte est renommée, **le mot de passe n'est pas touché** ; à la réactivation le client retrouve exactement ses identifiants, rien à ressaisir.
 
 
+### Photos de profil (Freda Mail)
+
+Mêmes sessions de boîte que le push. Les photos ne sont **jamais publiques** : seules les boîtes connectées à l'application les voient.
+- `PUT /api/mail/photo` (corps = octets de l'image) : JPEG, PNG ou WebP (type vérifié sur les octets, 150 Ko max ; l'app réduit à 384 px). Renvoie `{ version, updatedAt }`.
+- `DELETE /api/mail/photo` : retire la photo.
+- `POST /api/mail/photos` `{ "addresses": [...] }` (50 max) → `{ photos: { adresse: version } }` pour celles qui en ont une.
+- `GET /api/mail/photo/:adresse` : l'image (`ETag`, `304` si inchangée) ; `404` sans photo, ou si la boîte est suspendue.
+Supprimée avec la boîte (`ON DELETE CASCADE`).
+
 ### Notifications push (nouveau message)
 Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purelymail n'a pas le certificat Apple (doc Purelymail) : l'app ne peut pas être prévenue seule.
 1. `POST /api/mail/login` renvoie aussi `token` : **session de boîte** (30 jours, `MAIL_SESSION_DAYS`), valable **uniquement** pour `/api/mail/push` (jamais pour le compte Freda ; un jeton de compte n'ouvre pas ces routes). Elle est révoquée si le mot de passe de la boîte change ou si la boîte est suspendue : l'app se reconnecte avec l'adresse + mot de passe.

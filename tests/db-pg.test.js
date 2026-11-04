@@ -28,7 +28,7 @@ const user = (d, id, email = id + '@x.test') => d.run('INSERT INTO users (id, em
 
 test('pg : migrations appliquées, relance sans effet (table app_migrations), types numériques', async () => {
   await withDb(async (d) => {
-    assert.deepStrictEqual((await d.all('SELECT version FROM app_migrations ORDER BY version')).map((r) => r.version), ['001_init', '002_security', '003_supabase_hardening']);
+    assert.deepStrictEqual((await d.all('SELECT version FROM app_migrations ORDER BY version')).map((r) => r.version), ['001_init', '002_security', '003_supabase_hardening', '004_mailbox_photos']);
     await user(d, 'u1');
     await d.run('INSERT INTO orders (id, user_id, reference, kind, status, amount, created_at, updated_at, last_check) VALUES (?,?,?,?,?,?,?,?,?)', 'o1', 'u1', 'R1', 'domain', 'x', 12.99, 'n', 'n', Date.now());
     const r = await d.get('SELECT last_check, amount, (SELECT COUNT(*) FROM orders) AS n, (SELECT SUM(amount) FROM orders) AS total FROM orders');
