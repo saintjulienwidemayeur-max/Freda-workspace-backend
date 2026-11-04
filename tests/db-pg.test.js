@@ -35,7 +35,7 @@ test('pg : migrations appliquées, relance sans effet (table app_migrations), ty
     assert.strictEqual(typeof r.last_check, 'number'); assert.ok(r.last_check > 1.7e12);
     assert.deepStrictEqual([r.amount, r.n, r.total], [12.99, 1, 12.99]);
   });
-  await withDb(async (again) => { assert.strictEqual((await again.get('SELECT COUNT(*) AS n FROM app_migrations')).n, 3, 'seconde instance : rien à refaire, pas de doublon'); });
+  await withDb(async (again) => { assert.strictEqual((await again.get('SELECT COUNT(*) AS n FROM app_migrations')).n, 4, 'seconde instance : rien à refaire, pas de doublon'); });
 });
 
 test('pg : transactions — annulation, imbriquées, et appels db.* faits dans la tx joints à SA connexion', async () => {
