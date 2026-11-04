@@ -17,6 +17,7 @@ const { createVault } = require('./src/vault');
 const { createSubscription } = require('./src/subscription');
 const { verifySignature } = require('./src/stripe');
 const { createPush } = require('./src/push');
+const { startKeepAlive } = require('./src/keepalive');
 const { createPhotos } = require('./src/photos');
 const { createSenders } = require('./src/push-senders');
 const { createOrders } = require('./src/orders');
@@ -258,12 +259,14 @@ if (require.main === module) {
   const problems = assertSafe(cfg);
   if (problems.length) { problems.forEach((p) => log('fatal', p)); process.exit(1); }
   const app = createApp({ cfg });
+  let keepAlive = { stop() {} };
   app.app.db.ready.then(() => {
     app.app.jobs.start(); app.app.jobs.startSweeper();
     app.app.push.start().catch((e) => log('error', 'push_start_failed', { message: e.message }));
+    keepAlive = startKeepAlive({ url: cfg.keepAlive.url, intervalMs: cfg.keepAlive.intervalMs, log });
     app.listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.mode, payments: cfg.payments.provider, mailer: cfg.mailer.provider, database: cfg.databaseUrl ? 'postgresql' : 'pglite', integrations: integrationSummary(cfg) }));
   }, (e) => { log('fatal', 'Base de données inaccessible ou migration échouée : ' + e.message); process.exit(1); });
-  const stop = () => { app.app.jobs.stop(); app.app.push.stop(); app.close(() => { app.app.db.close().finally(() => process.exit(0)); }); setTimeout(() => process.exit(0), 5000).unref(); };
+  const stop = () => { keepAlive.stop(); app.app.jobs.stop(); app.app.push.stop(); app.close(() => { app.app.db.close().finally(() => process.exit(0)); }); setTimeout(() => process.exit(0), 5000).unref(); };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
 }
 

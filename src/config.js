@@ -25,6 +25,7 @@ function loadConfig(env = process.env) {
     appUrl: (env.APP_URL || 'https://fredaworkspace.com').replace(/\/$/, ''),     // site (frontend)
     apiUrl: (env.API_URL || 'http://localhost:8787').replace(/\/$/, ''),          // URL publique de cette API (rappels OAuth)
     allowedOrigins: list(env.ALLOWED_ORIGINS, 'http://localhost:8080'),
+    keepAlive: { url: env.KEEP_ALIVE === 'false' ? '' : (env.KEEP_ALIVE_URL || env.RENDER_EXTERNAL_URL || ''), intervalMs: Number(env.KEEP_ALIVE_MS) || 10 * 60 * 1000 },   // auto-ping contre l'endormissement (Render gratuit)
     databaseUrl: env.DATABASE_URL || '',                           // PostgreSQL (Supabase : URI du « Session pooler »)
     databasePoolMax: Number(env.DATABASE_POOL_MAX) || 10,                // connexions simultanées maximum vers PostgreSQL (Supabase : rester sous la limite du pooler)
     databaseCa: String(env.DATABASE_CA || '').replace(/\\n/g, '\n'),   // certificat CA (PEM) pour vérifier le serveur ; vide = TLS sans vérification de l'autorité
@@ -94,7 +95,7 @@ function integrationSummary(cfg) {
     stripeSecretKey: !!s.secretKey, stripeWebhookSecret: !!s.webhookSecret, stripePublishableKey: !!s.publishableKey, stripeUiMode: s.secretKey ? s.uiMode : null,
     brevo: !!cfg.mailer.brevoKey, mailer: cfg.mailer.provider, purelymail: !!cfg.purelymail.apiKey,
     google: !!(cfg.google.clientId && cfg.google.clientSecret), alertWebhook: !!cfg.alerts.webhookUrl,
-    apns: !!cfg.push.apns.key, fcm: !!cfg.push.fcm.serviceAccount, appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, allowedOrigins: cfg.allowedOrigins.length,
+    apns: !!cfg.push.apns.key, fcm: !!cfg.push.fcm.serviceAccount, appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, allowedOrigins: cfg.allowedOrigins.length, keepAlive: !!cfg.keepAlive.url,
   };
 }
 

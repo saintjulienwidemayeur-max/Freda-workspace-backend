@@ -37,6 +37,9 @@ Parcours : le client choisit **le mot de passe de sa boîte** sur la plateforme 
 Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-mail, jamais stocké** : validé avant le paiement, gardé chiffré (AES-256-GCM, `DATA_KEY`) le temps de la commande puis supprimé (aussi purgé si la commande échoue). Suspension : la boîte est renommée, **le mot de passe n'est pas touché** ; à la réactivation le client retrouve exactement ses identifiants, rien à ressaisir.
 
 
+### Auto-ping (Render gratuit)
+Sur l'offre gratuite, Render endort le serveur après 15 minutes sans requête entrante : les observateurs IMAP des notifications s'arrêtent. Le serveur s'appelle donc lui-même (`/api/health`, toutes les 10 min) via `RENDER_EXTERNAL_URL` (fournie par Render). Désactivable avec `KEEP_ALIVE=false` ; adresse manuelle `KEEP_ALIVE_URL` ; intervalle `KEEP_ALIVE_MS` (60 s minimum). `keepAlive: true` apparaît dans la ligne `api_started`. Palliatif : l'offre Starter reste la vraie solution (et les 750 h gratuites par mois ne couvrent qu'un seul service actif en continu).
+
 ### Photos de profil (Freda Mail)
 
 Mêmes sessions de boîte que le push. Les photos ne sont **jamais publiques** : seules les boîtes connectées à l'application les voient.
