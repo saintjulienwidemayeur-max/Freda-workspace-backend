@@ -113,6 +113,7 @@ async function fakePurelymail(state) {
         state.domains.push(b.domainName); return json(res, 200, { type: 'success', result: {} });
       case 'createUser':
         if (!str(b.userName) || b.userName.includes('@') || !str(b.domainName) || !str(b.password)) return bad(res, 'createUser: userName = partie locale');
+        if (state.domains.includes(b.domainName) && state.weakPasswords && state.weakPasswords.includes(b.password)) return json(res, 200, { type: 'error', code: 'invalidPassword', message: 'password too weak' });
         if (!state.domains.includes(b.domainName)) return json(res, 200, { type: 'error', code: 'domainNotFound', message: 'add domain first' });
         if (state.users.includes(`${b.userName}@${b.domainName}`)) return json(res, 200, { type: 'error', code: 'userExists', message: 'exists' });
         state.users.push(`${b.userName}@${b.domainName}`); state.passwords[`${b.userName}@${b.domainName}`] = b.password; return json(res, 200, { type: 'success', result: {} });

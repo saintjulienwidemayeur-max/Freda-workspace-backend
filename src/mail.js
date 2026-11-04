@@ -31,7 +31,10 @@ function createPurelymail(cfg, log) {
     const res = await fetch(`${cfg.purelymail.baseUrl.replace(/\/$/, '')}/${endpoint}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Purelymail-Api-Token': cfg.purelymail.apiKey }, body: JSON.stringify(body), signal: AbortSignal.timeout(20000) });
     let data = {};
     try { data = await res.json(); } catch (e) { /* corps non JSON */ }
-    if (!res.ok || data.type === 'error') { log('error', 'purelymail_failed', { endpoint, status: res.status, code: data.code }); throw new HttpError(502, 'Le serveur de messagerie n’a pas accepté la demande. Réessayez.', 'mail_provider_error'); }
+    if (!res.ok || data.type === 'error') {
+      log('error', 'purelymail_failed', { endpoint, status: res.status, code: data.code });
+      if (data.code === 'invalidPassword') throw new HttpError(400, 'Le serveur de messagerie a refusé ce mot de passe. Choisissez-en un plus long et moins courant : 14 caractères ou plus, mélangeant lettres, chiffres et symboles, sans mot du dictionnaire ni votre adresse.', 'weak_password');
+      throw new HttpError(502, 'Le serveur de messagerie n’a pas accepté la demande. Réessayez.', 'mail_provider_error'); }
     return data.result || {};
   }
   return {
