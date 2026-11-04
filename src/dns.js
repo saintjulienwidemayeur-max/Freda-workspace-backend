@@ -58,8 +58,35 @@ function defaultResolve(ip, domain, rrtype) {
 
 function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
   const brand = (cfg.mailDns && cfg.mailDns.brandDomain) || '';
-  const TEMPLATE = mailTemplate(brand);          // ce que le client doit publier
-  const DIRECT = mailTemplate();                  // enregistrements Purelymail directs : toujours acceptés à la vérification (clients existants)
+  const BRANDED = brand ? mailTemplate(brand) : null;   // enregistrements « marque blanche » (relais dans VOTRE zone)
+  const DIRECT = mailTemplate();                         // enregistrements Purelymail directs : toujours acceptés à la vérification (clients existants)
+
+  /** Vérifie dans le DNS public que VOS relais existent (key1-3.dkimroot, dmarcroot en CNAME, _spf en TXT). Rien à publier chez les clients tant que ce n'est pas vrai. */
+  async function brandStatus() {
+    if (!brand) return { enabled: false, ready: false, brand: '', checks: [] };
+    const ip = cfg.dns.resolvers[0];
+    const norm = (v) => String(v).toLowerCase().replace(/\.$/, '');
+    const checks = [];
+    for (const n of [1, 2, 3]) {
+      const name = `key${n}.dkimroot.${brand}`, want = `key${n}.dkimroot.purelymail.com`;
+      const got = await resolve(ip, name, 'CNAME').catch(() => []);
+      checks.push({ name, type: 'CNAME', want, ok: got.some((g) => norm(g) === want) });
+    }
+    { const name = `dmarcroot.${brand}`, want = 'dmarcroot.purelymail.com'; const got = await resolve(ip, name, 'CNAME').catch(() => []); checks.push({ name, type: 'CNAME', want, ok: got.some((g) => norm(g) === want) }); }
+    { const name = `_spf.${brand}`, want = 'v=spf1 include:_spf.purelymail.com ~all'; const got = (await resolve(ip, name, 'TXT').catch(() => [])).map((a) => a.join('')); checks.push({ name, type: 'TXT', want, ok: got.some((t) => t.startsWith('v=spf1') && t.includes('_spf.purelymail.com')) }); }
+    return { enabled: true, ready: checks.every((c) => c.ok), brand, checks };
+  }
+  let brandCache = { at: 0, ok: false };
+  async function currentTemplate() {
+    if (!brand) return DIRECT;
+    const ttl = brandCache.ok ? 10 * 60_000 : 60_000;
+    if (Date.now() - brandCache.at >= ttl) {
+      const s = await brandStatus().catch(() => ({ ready: false, checks: [] }));
+      brandCache = { at: Date.now(), ok: s.ready };
+      if (!s.ready) log('warn', 'brand_dns_not_ready', { brand, missing: s.checks.filter((c) => !c.ok).map((c) => c.name) });   // repli : Purelymail direct, rien ne casse
+    }
+    return brandCache.ok ? BRANDED : DIRECT;
+  }
   const spfOk = (t) => t.startsWith('v=spf1') && (t.includes('purelymail') || (brand && t.includes('_spf.' + brand)));
   const rec = (r) => ({ id: r.id, type: r.type, name: r.name, value: r.value, ttl: r.ttl, priority: r.priority ?? undefined, managed: !!r.managed, role: r.role || undefined });
 
@@ -113,7 +140,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     const d = await ownDomain(userId, name);
     const have = await db.all('SELECT * FROM dns_records WHERE domain_id = ?', d.id);
     let added = 0;
-    for (const t of TEMPLATE) {
+    for (const t of await currentTemplate()) {
       if (have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value)) continue;
       // un ancien enregistrement e-mail incorrect (même type/nom, autre valeur) est remplacé plutôt que dupliqué (sauf TXT : plusieurs TXT sont légitimes)
       const stale = t.type !== 'TXT' && have.find((r) => r.type === t.type && r.name === t.name && r.managed);
@@ -178,10 +205,10 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
         await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'link-2', `Domaine existant ${name} ajouté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
       }
       const have = await db.all('SELECT * FROM dns_records WHERE domain_id = ?', did);
-      for (const t of TEMPLATE) if (!have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value))
+      for (const t of await currentTemplate()) if (!have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value))
         await db.run('INSERT INTO dns_records (id, domain_id, type, name, value, ttl, priority, managed, role) VALUES (?,?,?,?,?,?,?,?,?)', id(), did, t.type, t.name, t.value, 3600, t.priority ?? null, 1, t.role);
     });
-    return { domain: name, mode, nameservers: cfg.namesilo.nameservers, records: TEMPLATE, nameserversAvailable: cfg.namesilo.nameservers.length >= 2 };
+    return { domain: name, mode, nameservers: cfg.namesilo.nameservers, records: await currentTemplate(), nameserversAvailable: cfg.namesilo.nameservers.length >= 2 };
   }
 
   /** Vérifie la connexion en DNS réel : serveurs de noms (mode nameservers) ou enregistrements e-mail (mode records). */
@@ -203,10 +230,10 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
         if (!txt.some(spfOk)) missing.push('SPF');
         // DKIM : sans les 3 CNAME, le courrier part mais atterrit en spam ; on ne déclare donc pas le domaine « connecté » avant.
         let dkimOk = true;
-        for (let i = 0; i < TEMPLATE.length; i++) {
-          const r = TEMPLATE[i];
+        for (let i = 0; i < DIRECT.length; i++) {
+          const r = DIRECT[i];
           if (r.role !== 'DKIM') continue;
-          const ok = [r.value, DIRECT[i].value].map((v) => v.toLowerCase());   // cible de marque blanche OU cible Purelymail directe
+          const ok = [r.value, BRANDED && BRANDED[i].value].filter(Boolean).map((v) => v.toLowerCase());   // cible Purelymail directe OU cible de marque blanche
           const got = await resolve(ip, r.name + '.' + d.name, 'CNAME').catch(() => []);
           if (!got.some((g) => ok.includes(String(g).toLowerCase().replace(/\.$/, '')))) dkimOk = false;
         }
@@ -220,7 +247,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     return { connected: true, missing: [] };
   }
 
-  return { list, save, remove, autofix, ensureOwnership, txtVisible, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE: TEMPLATE, ownDomain };
+  return { list, save, remove, autofix, ensureOwnership, txtVisible, health, propagation, connect, verify, validateRecord, mailTemplate: currentTemplate, brandStatus, ownDomain };
 }
 
 module.exports = { createDns, MAIL_TEMPLATE, mailTemplate, validateRecord };

@@ -17,9 +17,13 @@ const { issueMailboxToken } = require('./auth');
 const LOCAL = /^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
 /** Mot de passe de la boîte choisi par le client : 10 à 128 caractères, ni l'adresse ni sa partie locale. */
 function validatePassword(pw, local) {
+  // Règles affichées au client par le frontend (assets/js/api.js, FW.passwordRules) : 12 à 128 caractères, au moins 3 types parmi
+  // minuscules / majuscules / chiffres / symboles, sans le nom de la boîte. Purelymail peut en plus refuser un mot de passe trop courant (invalidPassword).
   const p = String(pw ?? '');
-  if (p.length < 10 || p.length > 128 || /[\0\r\n]/.test(p)) throw new HttpError(400, 'Le mot de passe de la boîte doit faire entre 10 et 128 caractères.', 'weak_password');
-  if (local && (p.toLowerCase() === local || p.toLowerCase().startsWith(local + '@'))) throw new HttpError(400, 'Le mot de passe ne peut pas être votre adresse.', 'weak_password');
+  if (p.length < 12 || p.length > 128 || /[\0\r\n]/.test(p)) throw new HttpError(400, 'Le mot de passe de la boîte doit faire entre 12 et 128 caractères.', 'weak_password');
+  const kinds = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((r) => r.test(p)).length;
+  if (kinds < 3) throw new HttpError(400, 'Le mot de passe doit mélanger au moins 3 types parmi : minuscules, majuscules, chiffres et symboles.', 'weak_password');
+  if (local && String(local).length >= 3 && p.toLowerCase().includes(String(local).toLowerCase())) throw new HttpError(400, 'Le mot de passe ne doit pas contenir le nom de la boîte.', 'weak_password');
   return p;
 }
 const id = (p) => p + '_' + crypto.randomBytes(8).toString('hex');

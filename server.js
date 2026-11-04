@@ -174,6 +174,7 @@ function createApp(deps) {
   /* ----- administration (ADMIN_TOKEN) ----- */
   const admin = { admin: true };
   route('POST', '/api/admin/jobs/run', async () => jobs.run(), admin);
+  route('GET', '/api/admin/brand-dns', async () => dns.brandStatus(), admin);   // marque blanche DNS : vos relais existent-ils ? (vue détaillée)
   route('GET', '/api/admin/domain-prices', async () => catalog.priceTable(), admin);
   route('GET', '/api/admin/orders', async (c) => ({ orders: await db.all('SELECT id, reference, user_id, kind, status, amount, error, created_at FROM orders WHERE status = ? ORDER BY created_at DESC LIMIT 100', c.url.searchParams.get('status') || 'needs_attention') }), admin);
 
