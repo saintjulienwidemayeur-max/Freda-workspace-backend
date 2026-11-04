@@ -112,12 +112,16 @@ function createAccounts({ cfg, db, mailer, log }) {
     try { st = verifyJwt(state, cfg.auth.jwtSecret); } catch (e) { throw new HttpError(400, 'État OAuth invalide ou expiré.', 'invalid_state'); }
     const tok = await fetch(cfg.google.tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ code, client_id: cfg.google.clientId, client_secret: cfg.google.clientSecret, redirect_uri: `${cfg.apiUrl}/api/auth/oauth/google/callback`, grant_type: 'authorization_code' }), signal: AbortSignal.timeout(15000) });
-    if (!tok.ok) throw new HttpError(400, 'Connexion Google refusée.', 'oauth_failed');
+    if (!tok.ok) {
+      const g = await tok.json().catch(() => ({}));   // ex. invalid_client (secret erroné), invalid_grant (code déjà utilisé), redirect_uri_mismatch : ni secret ni jeton
+      log('warn', 'oauth_google_token_refused', { http: tok.status, error: String(g.error || '').slice(0, 60), description: String(g.error_description || '').slice(0, 160), redirectUri: `${cfg.apiUrl}/api/auth/oauth/google/callback` });
+      throw new HttpError(400, 'Connexion Google refusée.', 'oauth_failed');
+    }
     const { access_token } = await tok.json();
     const info = await fetch(cfg.google.userInfoUrl, { headers: { Authorization: 'Bearer ' + access_token }, signal: AbortSignal.timeout(15000) });
-    if (!info.ok) throw new HttpError(400, 'Connexion Google refusée.', 'oauth_failed');
+    if (!info.ok) { log('warn', 'oauth_google_userinfo_refused', { http: info.status }); throw new HttpError(400, 'Connexion Google refusée.', 'oauth_failed'); }
     const p = await info.json();
-    if (!p.sub || !p.email || p.email_verified === false) throw new HttpError(400, 'Adresse e-mail Google non vérifiée.', 'oauth_failed');
+    if (!p.sub || !p.email || p.email_verified === false) { log('warn', 'oauth_google_email_unverified', { hasEmail: !!p.email, verified: p.email_verified }); throw new HttpError(400, 'Adresse e-mail Google non vérifiée.', 'oauth_failed'); }
     const email = String(p.email).toLowerCase();
     let ident = await db.get('SELECT user_id FROM oauth_identities WHERE provider = ? AND subject = ?', 'google', String(p.sub));
     let row;
