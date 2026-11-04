@@ -17,6 +17,7 @@ const { createVault } = require('./src/vault');
 const { createSubscription } = require('./src/subscription');
 const { verifySignature } = require('./src/stripe');
 const { createPush } = require('./src/push');
+const { createPhotos } = require('./src/photos');
 const { createSenders } = require('./src/push-senders');
 const { createOrders } = require('./src/orders');
 const { createJobs } = require('./src/jobs');
@@ -61,6 +62,8 @@ function createApp(deps) {
   const authenticate = createAuthenticator(cfg, db);
   const authenticateMailbox = createMailboxAuthenticator(cfg, db);
   const push = createPush({ cfg, db, log: logger, vault, mail, senders: deps.pushSenders || createSenders(cfg), debounceMs: deps.pushDebounceMs });
+
+  const photos = createPhotos({ db });
 
   const L = { search: createLimiter(60, 60_000), auth: createLimiter(12, 60_000), buy: createLimiter(10, 60_000), write: createLimiter(120, 60_000), errors: createLimiter(20, 60_000) };
 
@@ -166,6 +169,16 @@ function createApp(deps) {
   route('GET', '/api/mail/push', async (c) => ({ ios: push.enabled('ios'), android: push.enabled('android'), devices: (await db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', c.mailbox.id)).n }), mbx);
   route('POST', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.register(c.mailbox, await c.body(4096)); }, mbx);
   route('DELETE', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.unregister(c.mailbox, c.url.searchParams.get('token') || (await c.body(4096)).token); }, mbx);
+  /* Photos de profil : visibles seulement par les utilisateurs connectés de l'application (session de boîte) */
+  route('PUT', '/api/mail/photo', async (c) => { limit(L.write, c.mailbox.id); return await photos.save(c.mailbox, await c.raw(photos.MAX_BYTES + 1024)); }, mbx);
+  route('DELETE', '/api/mail/photo', async (c) => { limit(L.write, c.mailbox.id); return await photos.remove(c.mailbox); }, mbx);
+  route('POST', '/api/mail/photos', async (c) => { limit(L.search, c.mailbox.id); return await photos.lookup((await c.body(8192)).addresses); }, mbx);
+  route('GET', '/api/mail/photo/:address', async (c, p) => {
+    limit(L.search, c.mailbox.id);
+    const ph = await photos.get(decodeURIComponent(p[0]));
+    if (!ph) throw new HttpError(404, 'Pas de photo.', 'no_photo');
+    return { binary: { type: ph.type, data: ph.data, etag: '"' + ph.version + '"' } };
+  }, mbx);
   route('POST', '/api/mailboxes/:id/password', async (c, p) => { limit(L.auth, c.user.id); return await mail.changePassword(c.user.id, p[0], (await c.body(2048)).password); }, auth);
   route('DELETE', '/api/mailboxes/:id', async (c, p) => (await mail.removeBox(c.user.id, p[0])), auth);
   route('POST', '/api/aliases', async (c) => (await mail.addAlias(c.user.id, await c.body())), auth);
@@ -201,7 +214,7 @@ function createApp(deps) {
     if (origin && cfg.allowedOrigins.includes(origin)) Object.assign(cors, { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', Vary: 'Origin' });
     if (origin && !cors['Access-Control-Allow-Origin'] && !rejectedOrigins.has(origin) && rejectedOrigins.size < 20) { rejectedOrigins.add(origin); log('warn', 'cors_origin_rejected', { origin, hint: 'ajouter cette origine à ALLOWED_ORIGINS' }); }
     const send = (status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...cors, ...headers }); res.end(JSON.stringify(body)); };
-    if (req.method === 'OPTIONS') return send(204, {}, { 'Access-Control-Allow-Methods': 'GET,POST,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key', 'Access-Control-Max-Age': '600' });
+    if (req.method === 'OPTIONS') return send(204, {}, { 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key', 'Access-Control-Max-Age': '600' });
     const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     const url = new URL(req.url, 'http://x');
     try {
@@ -216,6 +229,12 @@ function createApp(deps) {
       if (matched.opts.auth) ctx.user = await authenticate(req);
       if (matched.opts.mailbox) ctx.mailbox = await authenticateMailbox(req);
       const out = await matched.handler(ctx, params);
+      if (out && out.binary) {
+        const b = out.binary;
+        if (req.headers['if-none-match'] === b.etag) { res.writeHead(304, { ETag: b.etag, ...cors }); return res.end(); }
+        res.writeHead(200, { 'Content-Type': b.type, 'Content-Length': b.data.length, ETag: b.etag, 'Cache-Control': 'private, max-age=300', 'X-Content-Type-Options': 'nosniff', ...cors });
+        return res.end(b.data);
+      }
       if (out && out.redirect) { res.writeHead(302, { Location: out.redirect, 'Cache-Control': 'no-store', ...cors }); return res.end(); }
       return send(200, out);
     } catch (e) {

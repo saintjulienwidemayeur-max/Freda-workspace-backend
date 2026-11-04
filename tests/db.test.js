@@ -19,7 +19,7 @@ test('migrations appliquées une seule fois, dans l’ordre ; schémas isolés e
   assert.strictEqual((await a.get('SELECT COUNT(*) AS n FROM users')).n, 1);
   assert.strictEqual((await b.get('SELECT COUNT(*) AS n FROM users')).n, 0, 'autre base : vide');
   const v = (await a.all('SELECT version FROM app_migrations ORDER BY version')).map((r) => r.version);
-  assert.deepStrictEqual(v, ['001_init', '002_security', '003_supabase_hardening']);
+  assert.deepStrictEqual(v, ['001_init', '002_security', '003_supabase_hardening', '004_mailbox_photos']);
 });
 
 test('types : entiers 64 bits et agrégats rendus en nombres JavaScript (jamais en chaînes)', async () => {

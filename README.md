@@ -37,10 +37,19 @@ Parcours : le client choisit **le mot de passe de sa boîte** sur la plateforme 
 Le mot de passe choisi à l'achat n'est **jamais renvoyé, jamais envoyé par e-mail, jamais stocké** : validé avant le paiement, gardé chiffré (AES-256-GCM, `DATA_KEY`) le temps de la commande puis supprimé (aussi purgé si la commande échoue). Suspension : la boîte est renommée, **le mot de passe n'est pas touché** ; à la réactivation le client retrouve exactement ses identifiants, rien à ressaisir.
 
 
+### Photos de profil (Freda Mail)
+
+Mêmes sessions de boîte que le push. Les photos ne sont **jamais publiques** : seules les boîtes connectées à l'application les voient.
+- `PUT /api/mail/photo` (corps = octets de l'image) : JPEG, PNG ou WebP (type vérifié sur les octets, 150 Ko max ; l'app réduit à 384 px). Renvoie `{ version, updatedAt }`.
+- `DELETE /api/mail/photo` : retire la photo.
+- `POST /api/mail/photos` `{ "addresses": [...] }` (50 max) → `{ photos: { adresse: version } }` pour celles qui en ont une.
+- `GET /api/mail/photo/:adresse` : l'image (`ETag`, `304` si inchangée) ; `404` sans photo, ou si la boîte est suspendue.
+Supprimée avec la boîte (`ON DELETE CASCADE`).
+
 ### Notifications push (nouveau message)
 Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purelymail n'a pas le certificat Apple (doc Purelymail) : l'app ne peut pas être prévenue seule.
 1. `POST /api/mail/login` renvoie aussi `token` : **session de boîte** (30 jours, `MAIL_SESSION_DAYS`), valable **uniquement** pour `/api/mail/push` (jamais pour le compte Freda ; un jeton de compte n'ouvre pas ces routes). Elle est révoquée si le mot de passe de la boîte change ou si la boîte est suspendue : l'app se reconnecte avec l'adresse + mot de passe.
-2. `GET /api/mail/push` → `{ ios, android, devices }` (plateformes configurées côté serveur). `POST /api/mail/push` `{ "platform": "ios" | "android", "token": "<jeton APNs hexadécimal | jeton FCM>" }` enregistre l'appareil. `DELETE /api/mail/push?token=…` le retire. Un téléphone ne notifie qu'un compte à la fois ; 20 appareils par boîte.
+2. `GET /api/mail/push` → `{ ios, android, devices }` (plateformes configurées côté serveur). `POST /api/mail/push` `{ "platform": "ios" | "android", "token": "<jeton APNs hexadécimal | jeton FCM>" }` enregistre l'appareil. `DELETE /api/mail/push?token=…` le retire. Un même téléphone peut notifier **plusieurs comptes** (une inscription par boîte, avec la session de chaque boîte) ; chaque notification contient `data.mailbox` (adresse de la boîte concernée) pour que l'app ouvre le bon compte ; 20 appareils par boîte.
 3. Côté serveur : un mot de passe d'application Purelymail « Freda push » **par boîte** (jamais le mot de passe du client, chiffré avec `DATA_KEY`, révoqué quand le dernier appareil part) et un observateur **IMAP IDLE** par boîte active qui a un appareil. Il compare `UIDNEXT` au dernier UID notifié : **pas de doublon, rattrapage après redémarrage**, rien pour une suppression. Rafales regroupées. Réconciliation toutes les 60 s : suspension / réactivation / suppression sont prises en compte (la suspension arrête l'observateur ; la réactivation le relance sans réinscription).
 4. Contenu : `title: "Nouveau message"` (ou « N nouveaux messages »), `body: <adresse de la boîte>`, `data: { kind: "new_mail", mailbox, count }`. **Aucun expéditeur ni objet** par défaut ; `PUSH_PREVIEW=true` les ajoute (ils transitent alors par Apple / Google). Les jetons morts (APNs 410 / `BadDeviceToken`, FCM `UNREGISTERED`) sont supprimés.
 5. Configuration : iPhone `APNS_KEY` (contenu du `.p8`, texte ou base64), `APNS_KEY_ID`, `APNS_TEAM_ID`, `APNS_BUNDLE_ID`, `APNS_ENV=sandbox|production` ; Android `FCM_SERVICE_ACCOUNT` (JSON du compte de service Firebase, texte ou base64). Une plateforme non configurée répond `503 push_not_configured`. À l'app de gérer côté appareil : permission de notification, canal Android `mail`, et récupération des messages en IMAP à l'ouverture sur `data.kind == "new_mail"`.

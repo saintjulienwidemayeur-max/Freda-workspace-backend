@@ -152,7 +152,7 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
     try { await ensureCredential(b); }
     catch (e) { if (e instanceof HttpError) throw e; throw new HttpError(502, 'Le serveur de messagerie n’a pas accepté la demande. Réessayez.', 'mail_provider_error'); }
     await db.tx(async () => {
-      await db.run('DELETE FROM push_devices WHERE platform = ? AND token = ? AND mailbox_id <> ?', platform, t, b.id);    // un téléphone ne notifie qu'UN compte à la fois
+      // un même téléphone peut notifier PLUSIEURS comptes (application à comptes multiples) : l'app désenregistre un compte quand on le retire
       if (!(await db.get('SELECT 1 FROM push_devices WHERE mailbox_id = ? AND platform = ? AND token = ?', b.id, platform, t))) await db.run('INSERT INTO push_devices (id, mailbox_id, platform, token, created_at) VALUES (?,?,?,?,?)', idOf(), b.id, platform, t, new Date().toISOString());
     });
     await reconcile();

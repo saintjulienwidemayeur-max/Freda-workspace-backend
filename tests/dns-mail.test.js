@@ -340,16 +340,18 @@ test('Purelymail refuse le mot de passe (invalidPassword) : message précis 400 
   assert.strictEqual(r.status, 400);
   const body = await r.json();
   assert.strictEqual(body.code, 'weak_password');
-  assert.match(body.message, /14 caractères/);
+  assert.match(body.message, /quatre mots simples/);
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 0);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'faible', domain: 'neuf.com', password: 'Un-Autre#Mot2Passe-Long9' } })).status, 200);
 });
 
-test('mot de passe de boîte : 12 à 128 caractères, 3 types, sans le nom de la boîte — messages précis', async () => {
+test('mot de passe de boîte : 8 à 128 caractères, pas trop courant, pas le nom de la boîte — simple mais jamais n\'importe quoi', async () => {
   const t = await withDomain();
-  const tryPw = async (password) => { const r = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'regle', domain: 'neuf.com', password } }); return { status: r.status, message: (await r.json()).message }; };
-  assert.match((await tryPw('Court1!')).message, /12 et 128/);
-  assert.match((await tryPw('seulementdesminuscules')).message, /3 types/);
-  assert.match((await tryPw('Regle-2026-Secret!')).message, /nom de la boîte/);
-  assert.strictEqual((await tryPw('Un-Bon#Mot2Passe')).status, 200);
+  const tryPw = async (password, local = 'regle') => { const r = await t.user('/api/mailboxes', { method: 'POST', body: { local, domain: 'neuf.com', password } }); return { status: r.status, message: (await r.json()).message }; };
+  assert.match((await tryPw('court')).message, /8 et 128/);
+  assert.match((await tryPw('12345678')).message, /trop courant/);
+  assert.match((await tryPw('aaaaaaaaaa')).message, /trop courant/);
+  assert.match((await tryPw('regle', 'regle')).message, /8 et 128/);
+  assert.match((await tryPw('regleregle', 'regleregle')).message, /nom de la boîte/, 'identique au nom de la boîte');
+  assert.strictEqual((await tryPw('cheval-bleu-maison')).status, 200, 'phrase de passe simple acceptée');
 });

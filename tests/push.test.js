@@ -159,14 +159,20 @@ test('désenregistrement : un appareil restant garde la surveillance ; le dernie
   t.push.stop();
 });
 
-test('un téléphone qui change de compte ne notifie plus l’ancien', async () => {
+test('comptes multiples : un même téléphone notifie les deux boîtes, chaque notification nomme la boîte ; retirer un compte ne coupe pas l’autre', async () => {
   const t = await withPush();
   await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com', password: 'AutreMotDePasse#1' } });
   const t2 = await t.login('ventes', 'AutreMotDePasse#1');
   await t.reg({ platform: 'ios', token: IOS });
   await t.reg({ platform: 'ios', token: IOS }, t2);
-  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', await t.boxId())).n, 0);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', await t.boxId())).n, 1);
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', await t.boxId('ventes'))).n, 1);
+  await t.push.reconcile(); await t.ready(); await t.ready('ventes');
+  t.sent.length = 0; t.pmState.addMail('ventes@neuf.com', {});
+  await waitFor(() => t.sent.length === 1);
+  assert.strictEqual(t.sent[0].msg.data.mailbox, 'ventes@neuf.com');
+  assert.strictEqual((await t.mb('/api/mail/push?token=' + IOS, { method: 'DELETE' }, t2)).status, 200);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', await t.boxId())).n, 1, 'l’autre compte garde ses notifications');
   t.push.stop();
 });
 
