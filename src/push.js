@@ -16,6 +16,7 @@ const crypto = require('crypto');
 const net = require('net');
 const tls = require('tls');
 const { HttpError } = require('./errors');
+const { previewText } = require('./mail-preview');
 
 const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); t.unref && t.unref(); });
 const MAX_DEVICES = 20;
@@ -75,10 +76,17 @@ function watchMailbox({ imap, user, pass, getLastUid, setLastUid, onNew, onDenie
       const info = { count: uidnext - 1 - last };
       if (preview) {
         try {
-          const f = await conn.run(`w${++n}`, `UID FETCH ${uidnext - 1} (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])`);
+          const uid = uidnext - 1;
+          const f = await conn.run(`w${++n}`, `UID FETCH ${uid} (BODY.PEEK[HEADER.FIELDS (FROM SUBJECT CONTENT-TYPE CONTENT-TRANSFER-ENCODING)])`);
           const text = f.lines.join('\n');
           info.from = decodeWords((/^From: (.*)$/mi.exec(text) || [])[1] || '').replace(/<.*>/, '').replace(/"/g, '').trim();
           info.subject = decodeWords((/^Subject: (.*)$/mi.exec(text) || [])[1] || '');
+          if (info.count === 1) {
+            try {
+              const b = await conn.run(`w${++n}`, `UID FETCH ${uid} (BODY.PEEK[TEXT]<0.3000>)`);
+              info.snippet = previewText(text, b.lines.slice(1).join('\n').replace(/\)\s*$/, ''));
+            } catch (e) { /* extrait facultatif */ }
+          }
         } catch (e) { /* aperçu facultatif */ }
       }
       await setLastUid(uidnext - 1);
@@ -172,8 +180,8 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
     const single = p.count === 1 && cfg.push.preview && (p.from || p.subject);
     const msg = {
       title: single ? (p.from || b.address) : (p.count > 1 ? `${p.count} nouveaux messages` : 'Nouveau message'),
-      body: single ? (p.subject || '(sans objet)') : b.address,
-      data: { kind: 'new_mail', mailbox: b.address, count: p.count }, collapseId: b.id,
+      body: single ? [p.subject || '(sans objet)', p.snippet].filter(Boolean).join('\n') : b.address,
+      data: { kind: 'new_mail', mailbox: b.address, count: p.count, ...(single && p.from ? { from: p.from } : {}) }, collapseId: b.id,
     };
     for (const d of await db.all('SELECT * FROM push_devices WHERE mailbox_id = ?', mailboxId)) {
       const sender = senders && senders[d.platform];
@@ -187,7 +195,7 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
 
   function notify(mailboxId, info) {
     const cur = pending.get(mailboxId) || { count: 0 };
-    cur.count += info.count; cur.from = info.from; cur.subject = info.subject;      // regroupe les rafales : une notification par fenêtre
+    cur.count += info.count; cur.from = info.from; cur.subject = info.subject; cur.snippet = info.snippet;      // regroupe les rafales : une notification par fenêtre
     clearTimeout(cur.timer); cur.timer = setTimeout(async () => dispatch(mailboxId).catch(() => {}), debounceMs); cur.timer.unref && cur.timer.unref();
     pending.set(mailboxId, cur);
   }

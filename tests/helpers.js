@@ -173,9 +173,9 @@ async function fakeImap(pmState) {
   pmState.listeners = pmState.listeners || {};      // utilisateur -> fonctions appelées à l'arrivée d'un message (IDLE)
   const nextUid = (u) => (pmState.inbox[u] || []).reduce((m, x) => Math.max(m, x.uid || 0), 0) + 1;
   /** Dépose un message dans la boîte d'un utilisateur (livraison) et réveille les connexions IDLE. */
-  pmState.addMail = (user, { subject = 'Sujet', from = 'Expéditeur <exp@example.org>' } = {}) => {
+  pmState.addMail = (user, { subject = 'Sujet', from = 'Expéditeur <exp@example.org>', body = '', headers = '' } = {}) => {
     const box = (pmState.inbox[user] = pmState.inbox[user] || []);
-    const uid = nextUid(user); box.push({ uid, subject, from });
+    const uid = nextUid(user); box.push({ uid, subject, from, body, headers });
     (pmState.listeners[user] || []).forEach((f) => f(box.length));
     return uid;
   };
@@ -206,7 +206,8 @@ async function fakeImap(pmState) {
         }
         else if ((m = /^(\w+) UID FETCH (\d+) /i.exec(line))) {
           const msg = (pmState.inbox[authed] || []).find((x) => x.uid === Number(m[2])) || { from: '', subject: '' };
-          const hdr = `From: ${msg.from}\r\nSubject: ${msg.subject}\r\n\r\n`;
+          if (/BODY\.PEEK\[TEXT\]/i.test(line)) { const b = msg.body || ''; sock.write(`* 1 FETCH (UID ${m[2]} BODY[TEXT]<0> {${Buffer.byteLength(b)}}\r\n${b})\r\n${m[1]} OK done\r\n`); continue; }
+          const hdr = `From: ${msg.from}\r\nSubject: ${msg.subject}\r\n${msg.headers || ''}\r\n`;
           sock.write(`* 1 FETCH (UID ${m[2]} BODY[HEADER.FIELDS (FROM SUBJECT)] {${Buffer.byteLength(hdr)}}\r\n${hdr})\r\n${m[1]} OK done\r\n`);
         }
         else if ((m = /^(\w+) SEARCH SUBJECT "(.*)"$/i.exec(line))) {

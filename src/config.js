@@ -68,7 +68,7 @@ function loadConfig(env = process.env) {
     },
     dataKey: env.DATA_KEY || '',
     push: {
-      preview: env.PUSH_PREVIEW === 'true',                       // true : expéditeur + objet dans la notification (transitent par Apple/Google) ; défaut : « Nouveau message » seulement
+      preview: env.PUSH_PREVIEW !== 'false',                       // défaut : expéditeur, objet et début du message dans la notification (transitent par Apple/Google) ; PUSH_PREVIEW=false : « Nouveau message » seulement
       apns: { key: pem(env.APNS_KEY), keyId: env.APNS_KEY_ID || '', teamId: env.APNS_TEAM_ID || '', bundleId: env.APNS_BUNDLE_ID || '',
         baseUrl: env.APNS_BASE_URL || (env.APNS_ENV === 'sandbox' ? 'https://api.sandbox.push.apple.com' : 'https://api.push.apple.com') },
       fcm: { serviceAccount: json(env.FCM_SERVICE_ACCOUNT), baseUrl: env.FCM_BASE_URL || 'https://fcm.googleapis.com' },
