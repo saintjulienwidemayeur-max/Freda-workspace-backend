@@ -13,14 +13,19 @@ const TYPES = ['A', 'AAAA', 'CNAME', 'MX', 'TXT'];
 const id = () => 'dns_' + crypto.randomBytes(8).toString('hex');
 
 /** Enregistrements e-mail Freda Mail (identiques à FW_CONFIG.MAIL_DNS_TEMPLATE du frontend). */
-const MAIL_TEMPLATE = [
-  { type: 'MX', name: '@', value: 'mailserver.purelymail.com', priority: 50, role: 'MX' },
-  { type: 'TXT', name: '@', value: 'v=spf1 include:_spf.purelymail.com ~all', role: 'SPF' },
-  { type: 'CNAME', name: 'purelymail1._domainkey', value: 'key1.dkimroot.purelymail.com', role: 'DKIM' },
-  { type: 'CNAME', name: 'purelymail2._domainkey', value: 'key2.dkimroot.purelymail.com', role: 'DKIM' },
-  { type: 'CNAME', name: 'purelymail3._domainkey', value: 'key3.dkimroot.purelymail.com', role: 'DKIM' },
-  { type: 'CNAME', name: '_dmarc', value: 'dmarcroot.purelymail.com', role: 'DMARC' },
-];
+/** Modèle d'enregistrements e-mail. brand = domaine de votre zone qui relaie vers Purelymail (voir README) ; vide = Purelymail direct. Le MX reste chez Purelymail (un MX ne peut pas être un CNAME). */
+function mailTemplate(brand = '') {
+  const root = brand || 'purelymail.com';
+  return [
+    { type: 'MX', name: '@', value: 'mailserver.purelymail.com', priority: 50, role: 'MX' },
+    { type: 'TXT', name: '@', value: `v=spf1 include:_spf.${root} ~all`, role: 'SPF' },
+    { type: 'CNAME', name: 'purelymail1._domainkey', value: `key1.dkimroot.${root}`, role: 'DKIM' },
+    { type: 'CNAME', name: 'purelymail2._domainkey', value: `key2.dkimroot.${root}`, role: 'DKIM' },
+    { type: 'CNAME', name: 'purelymail3._domainkey', value: `key3.dkimroot.${root}`, role: 'DKIM' },
+    { type: 'CNAME', name: '_dmarc', value: `dmarcroot.${root}`, role: 'DMARC' },
+  ];
+}
+const MAIL_TEMPLATE = mailTemplate();
 
 const HOST = /^(@|\*|[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?(\.[a-z0-9_]([a-z0-9_-]{0,61}[a-z0-9_])?)*)$/i;
 const FQDN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$/;
@@ -52,6 +57,10 @@ function defaultResolve(ip, domain, rrtype) {
 }
 
 function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
+  const brand = (cfg.mailDns && cfg.mailDns.brandDomain) || '';
+  const TEMPLATE = mailTemplate(brand);          // ce que le client doit publier
+  const DIRECT = mailTemplate();                  // enregistrements Purelymail directs : toujours acceptés à la vérification (clients existants)
+  const spfOk = (t) => t.startsWith('v=spf1') && (t.includes('purelymail') || (brand && t.includes('_spf.' + brand)));
   const rec = (r) => ({ id: r.id, type: r.type, name: r.name, value: r.value, ttl: r.ttl, priority: r.priority ?? undefined, managed: !!r.managed, role: r.role || undefined });
 
   async function ownDomain(userId, name) {
@@ -104,7 +113,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     const d = await ownDomain(userId, name);
     const have = await db.all('SELECT * FROM dns_records WHERE domain_id = ?', d.id);
     let added = 0;
-    for (const t of MAIL_TEMPLATE) {
+    for (const t of TEMPLATE) {
       if (have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value)) continue;
       // un ancien enregistrement e-mail incorrect (même type/nom, autre valeur) est remplacé plutôt que dupliqué (sauf TXT : plusieurs TXT sont légitimes)
       const stale = t.type !== 'TXT' && have.find((r) => r.type === t.type && r.name === t.name && r.managed);
@@ -133,7 +142,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     const dkim = records.filter((r) => r.name.endsWith('._domainkey')).length;
     return {
       MX: has((r) => r.type === 'MX' && r.value.includes('purelymail')) ? 'ok' : 'missing',
-      SPF: has((r) => r.type === 'TXT' && r.value.startsWith('v=spf1') && r.value.includes('purelymail')) ? 'ok' : 'missing',
+      SPF: has((r) => r.type === 'TXT' && spfOk(r.value)) ? 'ok' : 'missing',
       DKIM: dkim >= 3 ? 'ok' : dkim > 0 ? 'partial' : 'missing',
       DMARC: has((r) => r.name === '_dmarc') ? 'ok' : 'missing',
     };
@@ -169,10 +178,10 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
         await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'link-2', `Domaine existant ${name} ajouté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
       }
       const have = await db.all('SELECT * FROM dns_records WHERE domain_id = ?', did);
-      for (const t of MAIL_TEMPLATE) if (!have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value))
+      for (const t of TEMPLATE) if (!have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value))
         await db.run('INSERT INTO dns_records (id, domain_id, type, name, value, ttl, priority, managed, role) VALUES (?,?,?,?,?,?,?,?,?)', id(), did, t.type, t.name, t.value, 3600, t.priority ?? null, 1, t.role);
     });
-    return { domain: name, mode, nameservers: cfg.namesilo.nameservers, records: MAIL_TEMPLATE, nameserversAvailable: cfg.namesilo.nameservers.length >= 2 };
+    return { domain: name, mode, nameservers: cfg.namesilo.nameservers, records: TEMPLATE, nameserversAvailable: cfg.namesilo.nameservers.length >= 2 };
   }
 
   /** Vérifie la connexion en DNS réel : serveurs de noms (mode nameservers) ou enregistrements e-mail (mode records). */
@@ -191,12 +200,15 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
         const mx = await resolve(ip, d.name, 'MX').catch(() => []);
         if (!mx.some((m) => /purelymail/i.test(m.exchange))) missing.push('MX');
         const txt = (await resolve(ip, d.name, 'TXT').catch(() => [])).map((a) => a.join(''));
-        if (!txt.some((t) => t.startsWith('v=spf1') && t.includes('purelymail'))) missing.push('SPF');
+        if (!txt.some(spfOk)) missing.push('SPF');
         // DKIM : sans les 3 CNAME, le courrier part mais atterrit en spam ; on ne déclare donc pas le domaine « connecté » avant.
         let dkimOk = true;
-        for (const r of MAIL_TEMPLATE.filter((x) => x.role === 'DKIM')) {
+        for (let i = 0; i < TEMPLATE.length; i++) {
+          const r = TEMPLATE[i];
+          if (r.role !== 'DKIM') continue;
+          const ok = [r.value, DIRECT[i].value].map((v) => v.toLowerCase());   // cible de marque blanche OU cible Purelymail directe
           const got = await resolve(ip, r.name + '.' + d.name, 'CNAME').catch(() => []);
-          if (!got.some((g) => String(g).toLowerCase().replace(/\.$/, '') === r.value.toLowerCase())) dkimOk = false;
+          if (!got.some((g) => ok.includes(String(g).toLowerCase().replace(/\.$/, '')))) dkimOk = false;
         }
         if (!dkimOk) missing.push('DKIM');
       }
@@ -208,7 +220,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     return { connected: true, missing: [] };
   }
 
-  return { list, save, remove, autofix, ensureOwnership, txtVisible, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE, ownDomain };
+  return { list, save, remove, autofix, ensureOwnership, txtVisible, health, propagation, connect, verify, validateRecord, MAIL_TEMPLATE: TEMPLATE, ownDomain };
 }
 
-module.exports = { createDns, MAIL_TEMPLATE, validateRecord };
+module.exports = { createDns, MAIL_TEMPLATE, mailTemplate, validateRecord };

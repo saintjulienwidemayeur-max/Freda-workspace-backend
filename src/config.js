@@ -75,6 +75,8 @@ function loadConfig(env = process.env) {
     imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
     purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0', suspendMode: env.MAIL_SUSPEND_MODE === 'password' ? 'password' : 'rename' },
     dns: { resolvers: list(env.DNS_RESOLVERS, '8.8.8.8,1.1.1.1,9.9.9.9,208.67.222.222') },
+    // Marque blanche DNS (facultatif) : domaine de VOTRE zone qui relaie les enregistrements DKIM/SPF/DMARC vers Purelymail (voir README). Vide = enregistrements Purelymail directs.
+    mailDns: { brandDomain: String(env.MAIL_DNS_BRAND_DOMAIN || '').trim().toLowerCase().replace(/\.$/, '') },
     renewals: { enabled: bool(env.RENEWALS_ENABLED, true), daysBefore: Number(env.RENEWAL_DAYS_BEFORE) || 30, intervalMs: Number(env.JOBS_INTERVAL_MS) || 6 * 3600 * 1000 },
     alerts: { webhookUrl: env.ALERT_WEBHOOK_URL || '' },
   };
@@ -121,6 +123,7 @@ function assertSafe(cfg) {
   if ((cfg.push.apns.key || cfg.push.fcm.serviceAccount) && !cfg.purelymail.apiKey) errors.push('Les notifications push exigent PURELYMAIL_API_KEY (identifiant de surveillance par boîte).');
   if (cfg.mailer.provider === 'brevo' && !cfg.mailer.brevoKey) errors.push('BREVO_API_KEY requise avec MAILER=brevo.');
   if (cfg.nodeEnv === 'production' && cfg.mailer.provider === 'console') errors.push('MAILER=console en production : aucun e-mail (reçus, réinitialisation de mot de passe) ne partirait.');
+  if (cfg.mailDns.brandDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(cfg.mailDns.brandDomain)) errors.push('MAIL_DNS_BRAND_DOMAIN invalide (ex. fredaworkspace.com).');
   if (cfg.namesilo.nameservers.length === 1) errors.push('NAMESERVERS doit contenir au moins 2 serveurs (règle NameSilo).');
   return errors;
 }
