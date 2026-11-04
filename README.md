@@ -89,6 +89,16 @@ Toutes sont listées avec leur valeur par défaut dans `.env.example`. En plus d
 - **Domaine existant, mode `records`** (le seul disponible sans `NAMESERVERS`) : le client ajoute lui-même chez son hébergeur DNS les 6 enregistrements du modèle **plus** le TXT de preuve de propriété (`purelymail_ownership_proof=…`, renvoyé par `GET /api/domains/:d/mail-ownership`). Il doit supprimer ses anciens MX et SPF (un seul SPF par domaine), et sur Cloudflare mettre les CNAME en « DNS only » (nuage gris). Rien n'est poussé chez un hébergeur externe.
 - **Vérification** (`POST /api/domains/:d/verify`) : en mode `records`, MX, SPF **et les 3 DKIM** doivent être présents ; la réponse liste ce qui manque (`missing`). DMARC n'est pas bloquant.
 - **Propagation** : souvent 15 minutes, parfois 24 à 48 h. Les résolveurs interrogés sont configurables avec `DNS_RESOLVERS` (défaut : Google, Cloudflare, Quad9, OpenDNS).
+- **Marque blanche DNS (facultatif, `MAIL_DNS_BRAND_DOMAIN=fredaworkspace.com`)** : les clients publient des enregistrements qui pointent vers **votre** domaine au lieu de `purelymail.com` (SPF `include:_spf.fredaworkspace.com`, DKIM `key1.dkimroot.fredaworkspace.com`, DMARC `dmarcroot.fredaworkspace.com`). Avantage : si vous changez de fournisseur d'e-mail, vous modifiez vos enregistrements, pas ceux des clients. **À créer d'abord dans VOTRE zone DNS** (sinon la signature DKIM des clients échoue) :
+  | Type | Hôte | Valeur |
+  |---|---|---|
+  | CNAME | `key1.dkimroot` | `key1.dkimroot.purelymail.com` |
+  | CNAME | `key2.dkimroot` | `key2.dkimroot.purelymail.com` |
+  | CNAME | `key3.dkimroot` | `key3.dkimroot.purelymail.com` |
+  | CNAME | `dmarcroot` | `dmarcroot.purelymail.com` |
+  | TXT | `_spf` | `v=spf1 include:_spf.purelymail.com ~all` |
+
+  Limites : le **MX** reste `mailserver.purelymail.com` (un MX ne peut pas être un CNAME) et les serveurs IMAP/SMTP restent ceux de Purelymail (le certificat TLS est le leur). Si votre zone tombe ou si le domaine expire, le DKIM de **tous** les clients casse. **Non testé avec un vrai compte Purelymail** : testez d'abord sur votre propre domaine (envoyez un e-mail vers Gmail > « Afficher l'original » : `dkim=pass`, `spf=pass`) avant d'activer la variable. La vérification accepte toujours aussi les enregistrements Purelymail directs (clients déjà configurés). Les zones gérées par nous (domaines achetés ici) utilisent les nouvelles valeurs seulement après un « autofix ».
 - **`NAMESERVERS`** : à renseigner **uniquement** si ces serveurs de noms existent réellement (PowerDNS, Route 53…). Sinon laissez vide : le frontend ne propose alors que le mode `records`. Y pointer un domaine sans DNS autoritaire le met hors ligne.
 
 ## Test réel de Purelymail (boîte jetable)
