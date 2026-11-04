@@ -49,7 +49,7 @@ function createApns(cfg) {
   return {
     close() { if (session) { session.destroy(); session = null; } },
     async send(deviceToken, { title, body, data = {}, collapseId }) {
-      const payload = { aps: { alert: { title: clip(title, 120), ...(data.mailbox && data.from ? { subtitle: clip(data.mailbox, 80) } : {}), body: clip(body, 240) }, sound: 'default', 'thread-id': data.mailbox || undefined }, ...data };
+      const payload = { aps: { alert: { title: clip(title, 120), ...(data.mailbox && data.sender ? { subtitle: clip(data.mailbox, 80) } : {}), body: clip(body, 240) }, sound: 'default', 'thread-id': data.mailbox || undefined }, ...data };
       let r = await once(deviceToken, payload, collapseId, false);
       if (r.status === 403 && /ExpiredProviderToken/.test(r.reason)) r = await once(deviceToken, payload, collapseId, true);
       if (r.status === 200) return { ok: true };
@@ -84,7 +84,7 @@ function createFcm(cfg) {
       const message = {
         token: deviceToken, notification: { title: clip(title, 120), body: clip(body, 400) },
         data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
-        android: { priority: 'HIGH', ttl: '3600s', notification: { channel_id: 'courrier', sound: 'default', color: '#2B64E4', notification_priority: 'PRIORITY_HIGH', default_vibrate_timings: true, default_light_settings: true, ...(collapseId ? { tag: clip(collapseId, 64) } : {}) } },
+        android: { priority: 'HIGH', ttl: '3600s', notification: { channel_id: 'courrier', sound: 'default', color: '#2B64E4', ...(collapseId ? { tag: clip(collapseId, 64) } : {}) } },
       };
       let r = await post(message, false);
       if (r.status === 401) r = await post(message, true);

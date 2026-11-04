@@ -181,7 +181,7 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
     const msg = {
       title: single ? (p.from || b.address) : (p.count > 1 ? `${p.count} nouveaux messages` : 'Nouveau message'),
       body: single ? [p.subject || '(sans objet)', p.snippet].filter(Boolean).join('\n') : b.address,
-      data: { kind: 'new_mail', mailbox: b.address, count: p.count, ...(single && p.from ? { from: p.from } : {}) }, collapseId: b.id,
+      data: { kind: 'new_mail', mailbox: b.address, count: p.count, ...(single && p.from ? { sender: p.from } : {}) }, collapseId: b.id,
     };
     for (const d of await db.all('SELECT * FROM push_devices WHERE mailbox_id = ?', mailboxId)) {
       const sender = senders && senders[d.platform];
