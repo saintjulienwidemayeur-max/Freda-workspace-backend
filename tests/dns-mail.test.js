@@ -316,3 +316,15 @@ test('offre gratuite : compte sans abonnement = 2 boîtes (drapeau workspace.fre
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'a', domain: 'neuf.com' } })).status, 200);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'b', domain: 'neuf.com' } })).status, 403, 'Starter = 1 boîte : la limite payante remplace la gratuité');
 });
+
+test('Purelymail refuse le mot de passe (invalidPassword) : message précis 400 « weak_password », aucune boîte fantôme, la place est rendue', async () => {
+  const t = await withDomain();
+  t.pmState.weakPasswords = ['Motdepasse12'];
+  const r = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'faible', domain: 'neuf.com', password: 'Motdepasse12' } });
+  assert.strictEqual(r.status, 400);
+  const body = await r.json();
+  assert.strictEqual(body.code, 'weak_password');
+  assert.match(body.message, /14 caractères/);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 0);
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'faible', domain: 'neuf.com', password: 'Un-Autre#Mot2Passe-Long9' } })).status, 200);
+});
