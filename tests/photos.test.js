@@ -66,3 +66,9 @@ test('photo de profil : jamais publique ; une boîte suspendue ou supprimée n�
   await t.db.run('DELETE FROM mailboxes WHERE id = ?', id);
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailbox_photos')).n, 0, 'supprimée avec la boîte');
 });
+
+test('adresse de requête mal encodée : 400 (jamais un 500)', async () => {
+  const t = await withTwo();
+  const raw = await fetch(t.base + '/api/mail/photo/%E0%A4%A', { headers: { Authorization: 'Bearer ' + t.tok.love } });
+  assert.strictEqual(raw.status, 400);
+});

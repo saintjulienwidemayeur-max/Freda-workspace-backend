@@ -92,6 +92,21 @@ test('connexion de l’app : 5 mots de passe faux par adresse -> 429 ; le bon mo
   assert.strictEqual(t.imap.calls.length, 5, 'plus aucun appel vers Purelymail pendant le blocage');
 });
 
+test('connexion de l’app : le champ peut s’appeler email, address ou username (même résultat)', async () => {
+  const t = await withMail();
+  for (const field of ['email', 'address', 'username']) {
+    const r = await t.api('/api/mail/login', { method: 'POST', body: { [field]: 'contact@neuf.com', password: PW } });
+    assert.strictEqual(r.status, 200, field);
+  }
+});
+
+test('connexion de l’app : une rafale PARALLÈLE de mots de passe faux ne dépasse pas la limite (compteur réservé avant la vérification IMAP)', async () => {
+  const t = await withMail();
+  const rs = await Promise.all(Array.from({ length: 14 }, (_, i) => t.api('/api/mail/login', { method: 'POST', body: { email: 'contact@neuf.com', password: 'Faux-' + i + '-motdepasse' }, headers: { 'X-Forwarded-For': '10.0.0.' + i } })));
+  assert.ok(t.imap.calls.length <= 5, `au plus 5 vérifications chez Purelymail, obtenu ${t.imap.calls.length}`);
+  assert.strictEqual(rs.filter((r) => r.status === 429).length, 14 - t.imap.calls.length);
+});
+
 test('connexion de l’app : un succès remet le compteur d’échecs à zéro', async () => {
   const t = await withMail();
   for (let i = 0; i < 4; i++) await t.login('contact@neuf.com', 'Faux-' + i + '-motdepasse');

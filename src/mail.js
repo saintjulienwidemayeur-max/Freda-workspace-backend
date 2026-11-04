@@ -287,8 +287,8 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
    */
   const failures = new Map();
   const LOCK_MS = 15 * 60 * 1000, MAX_FAILS = 5;
-  async function appLogin({ email, password }) {
-    const address = String(email || '').trim().toLowerCase();
+  async function appLogin({ email, address: addr, username, password }) {
+    const address = String(email || addr || username || '').trim().toLowerCase();
     const bad = () => new HttpError(401, 'Adresse ou mot de passe incorrect.', 'invalid_credentials');
     if (!/^[^@\s]+@[^@\s]+$/.test(address) || typeof password !== 'string' || !password || password.length > 256) throw bad();
     const f = failures.get(address);
@@ -298,13 +298,14 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     const sub = await db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
     if (b.provider_status === 'suspended' || (sub && ['suspended', 'cancelled'].includes(sub.status))) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
+    const t0 = Date.now();
+    const reserved = f && t0 - f.t < LOCK_MS ? f.n + 1 : 1;
+    failures.set(address, { n: reserved, t: t0 });   // tentative comptée AVANT la vérification (annulée en cas de succès)
     let result;
     try { result = await imapLogin({ host: cfg.imap.host, port: cfg.imap.port, secure: cfg.imap.secure, user: address, pass: password }); }
-    catch (e) { log('warn', 'imap_check_failed', { message: e.message }); throw new HttpError(503, 'Le serveur de messagerie ne répond pas. Réessayez.', 'mail_provider_error'); }
+    catch (e) { if (reserved > 1) failures.set(address, { n: reserved - 1, t: t0 }); else failures.delete(address); log('warn', 'imap_check_failed', { message: e.message }); throw new HttpError(503, 'Le serveur de messagerie ne répond pas. Réessayez.', 'mail_provider_error'); }
     if (result !== 'ok') {
-      const n = f && Date.now() - f.t < LOCK_MS ? f.n + 1 : 1;
-      log('info', 'mail_login_failed', { address, reason: 'imap_denied', attempts: n, passwordLength: password.length });   // jamais le mot de passe lui-même
-      failures.set(address, { n, t: Date.now() });
+      log('info', 'mail_login_failed', { address, reason: 'imap_denied', attempts: reserved, passwordLength: password.length });   // jamais le mot de passe lui-même
       if (failures.size > 5000) for (const [k, v] of failures) if (Date.now() - v.t > LOCK_MS) failures.delete(k);
       throw bad();
     }
