@@ -276,27 +276,43 @@ test('boîtes : deux créations simultanées ne dépassent pas la limite de l’
   assert.ok(!(await (await t2.user('/api/workspace')).json()).mailboxes.some((b) => b.status === 'creating'));
 });
 
-test('marque blanche DNS (MAIL_DNS_BRAND_DOMAIN) : le client publie des enregistrements « fredaworkspace.com » ; Purelymail direct reste accepté', async () => {
-  const t = await setup({ env: { MAIL_DNS_BRAND_DOMAIN: 'FredaWorkspace.com.' } });
-  const d = await j(await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'client.com', mode: 'records' } }));
+test('marque blanche DNS (MAIL_DNS_BRAND_DOMAIN) : active SEULEMENT si vos relais existent ; sinon repli automatique sur Purelymail direct', async () => {
+  const t = await setup({ env: { MAIL_DNS_BRAND_DOMAIN: 'FredaWorkspace.com.', ADMIN_TOKEN: 'a'.repeat(32) } });
+  const admin = (p) => t.api(p, { headers: { Authorization: 'Bearer ' + 'a'.repeat(32) } });
+  // 1. vos relais n'existent pas encore : rien ne change pour le client (enregistrements Purelymail directs)
+  const st0 = await (await admin('/api/admin/brand-dns')).json();
+  assert.strictEqual(st0.enabled, true); assert.strictEqual(st0.ready, false); assert.ok(st0.checks.every((c) => !c.ok));
+  let d = await j(await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'client.com', mode: 'records' } }));
   const val = (role, name) => d.records.find((r) => r.role === role && (!name || r.name === name)).value;
+  assert.strictEqual(val('DKIM', 'purelymail1._domainkey'), 'key1.dkimroot.purelymail.com', 'repli : Purelymail direct tant que les relais manquent');
+  // 2. vous publiez vos relais dans VOTRE zone : la marque blanche s'active toute seule
+  for (let i = 1; i <= 3; i++) t.dnsState.cname[`key${i}.dkimroot.fredaworkspace.com`] = [`key${i}.dkimroot.purelymail.com.`];
+  t.dnsState.cname['dmarcroot.fredaworkspace.com'] = ['dmarcroot.purelymail.com'];
+  t.dnsState.txt['_spf.fredaworkspace.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
+  await new Promise((r) => setTimeout(r, 0));
+  const t2 = await setup({ env: { MAIL_DNS_BRAND_DOMAIN: 'fredaworkspace.com', ADMIN_TOKEN: 'a'.repeat(32) } });
+  for (let i = 1; i <= 3; i++) t2.dnsState.cname[`key${i}.dkimroot.fredaworkspace.com`] = [`key${i}.dkimroot.purelymail.com.`];
+  t2.dnsState.cname['dmarcroot.fredaworkspace.com'] = ['dmarcroot.purelymail.com'];
+  t2.dnsState.txt['_spf.fredaworkspace.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
+  assert.strictEqual((await (await t2.api('/api/admin/brand-dns', { headers: { Authorization: 'Bearer ' + 'a'.repeat(32) } })).json()).ready, true);
+  d = await j(await t2.user('/api/domains/connect', { method: 'POST', body: { domain: 'client.com', mode: 'records' } }));
   assert.strictEqual(val('DKIM', 'purelymail1._domainkey'), 'key1.dkimroot.fredaworkspace.com');
   assert.strictEqual(val('SPF'), 'v=spf1 include:_spf.fredaworkspace.com ~all');
   assert.strictEqual(val('DMARC'), 'dmarcroot.fredaworkspace.com');
   assert.strictEqual(val('MX'), 'mailserver.purelymail.com', 'le MX ne peut pas être masqué');
-  const w = await (await t.user('/api/workspace')).json();
+  const w = await (await t2.user('/api/workspace')).json();
   assert.deepStrictEqual(w.dnsConfig.mailTemplate, d.records, 'le frontend affiche exactement ce que le backend vérifie');
-  t.dnsState.mx['client.com'] = [{ exchange: 'mailserver.purelymail.com', priority: 50 }];
-  t.dnsState.txt['client.com'] = [['v=spf1 include:_spf.fredaworkspace.com ~all']];
-  assert.deepStrictEqual((await j(await t.user('/api/domains/client.com/verify', { method: 'POST' }))).missing, ['DKIM']);
-  for (let i = 1; i <= 3; i++) t.dnsState.cname[`purelymail${i}._domainkey.client.com`] = [`key${i}.dkimroot.fredaworkspace.com.`];
-  assert.strictEqual((await j(await t.user('/api/domains/client.com/verify', { method: 'POST' }))).connected, true);
-  // un client déjà configuré avec les enregistrements Purelymail directs reste valide
-  await t.user('/api/domains/connect', { method: 'POST', body: { domain: 'ancien.com', mode: 'records' } });
-  t.dnsState.mx['ancien.com'] = [{ exchange: 'mailserver.purelymail.com', priority: 50 }];
-  t.dnsState.txt['ancien.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
-  for (let i = 1; i <= 3; i++) t.dnsState.cname[`purelymail${i}._domainkey.ancien.com`] = [`key${i}.dkimroot.purelymail.com`];
-  assert.strictEqual((await j(await t.user('/api/domains/ancien.com/verify', { method: 'POST' }))).connected, true);
+  // 3. la vérification accepte les deux formes (branded et Purelymail direct)
+  t2.dnsState.mx['client.com'] = [{ exchange: 'mailserver.purelymail.com', priority: 50 }];
+  t2.dnsState.txt['client.com'] = [['v=spf1 include:_spf.fredaworkspace.com ~all']];
+  assert.deepStrictEqual((await j(await t2.user('/api/domains/client.com/verify', { method: 'POST' }))).missing, ['DKIM']);
+  for (let i = 1; i <= 3; i++) t2.dnsState.cname[`purelymail${i}._domainkey.client.com`] = [`key${i}.dkimroot.fredaworkspace.com.`];
+  assert.strictEqual((await j(await t2.user('/api/domains/client.com/verify', { method: 'POST' }))).connected, true);
+  await t2.user('/api/domains/connect', { method: 'POST', body: { domain: 'ancien.com', mode: 'records' } });
+  t2.dnsState.mx['ancien.com'] = [{ exchange: 'mailserver.purelymail.com', priority: 50 }];
+  t2.dnsState.txt['ancien.com'] = [['v=spf1 include:_spf.purelymail.com ~all']];
+  for (let i = 1; i <= 3; i++) t2.dnsState.cname[`purelymail${i}._domainkey.ancien.com`] = [`key${i}.dkimroot.purelymail.com`];
+  assert.strictEqual((await j(await t2.user('/api/domains/ancien.com/verify', { method: 'POST' }))).connected, true, 'un client déjà configuré en Purelymail direct reste valide');
 });
 
 test('MAIL_DNS_BRAND_DOMAIN invalide : le serveur refuse de démarrer', () => {
@@ -327,4 +343,13 @@ test('Purelymail refuse le mot de passe (invalidPassword) : message précis 400 
   assert.match(body.message, /14 caractères/);
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 0);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'faible', domain: 'neuf.com', password: 'Un-Autre#Mot2Passe-Long9' } })).status, 200);
+});
+
+test('mot de passe de boîte : 12 à 128 caractères, 3 types, sans le nom de la boîte — messages précis', async () => {
+  const t = await withDomain();
+  const tryPw = async (password) => { const r = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'regle', domain: 'neuf.com', password } }); return { status: r.status, message: (await r.json()).message }; };
+  assert.match((await tryPw('Court1!')).message, /12 et 128/);
+  assert.match((await tryPw('seulementdesminuscules')).message, /3 types/);
+  assert.match((await tryPw('Regle-2026-Secret!')).message, /nom de la boîte/);
+  assert.strictEqual((await tryPw('Un-Bon#Mot2Passe')).status, 200);
 });
