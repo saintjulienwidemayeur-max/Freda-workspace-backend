@@ -71,7 +71,7 @@ test('POST /admin/jobs/run : réservé au jeton administrateur (comparaison en t
 test('workspace : forme complète attendue par le frontend ; isolation entre comptes', async () => {
   const t = await withDomain();
   const w = await (await t.user('/api/workspace')).json();
-  assert.deepStrictEqual(Object.keys(w).sort(), ['activity', 'dns', 'dnsConfig', 'domains', 'invoices', 'mailboxes', 'aliases', 'paymentMethods', 'plan', 'user'].sort());
+  assert.deepStrictEqual(Object.keys(w).sort(), ['activity', 'dns', 'dnsConfig', 'domains', 'free', 'invoices', 'mailboxes', 'aliases', 'paymentMethods', 'plan', 'user'].sort());
   assert.strictEqual(w.plan, null);
   assert.strictEqual(w.domains[0].primary, true);
   assert.ok(w.activity.some((a) => /neuf\.com enregistré/.test(a.text)));

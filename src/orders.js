@@ -48,7 +48,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
 
   function planAmount(planId, cycle) {
     const p = cfg.plans[planId];
-    if (!p) throw new HttpError(400, 'Offre inconnue.', 'invalid_plan');
+    if (!p || p.free) throw new HttpError(400, 'Offre inconnue.', 'invalid_plan');   // l'offre gratuite n'est pas vendable
     if (!['monthly', 'yearly'].includes(cycle)) throw new HttpError(400, 'Période de facturation inconnue.', 'invalid_cycle');
     return r2(cycle === 'yearly' ? p.monthly * cfg.pricing.yearlyMonthsBilled : p.monthly);
   }

@@ -70,6 +70,9 @@ Toutes sont listées avec leur valeur par défaut dans `.env.example`. En plus d
 | `DATABASE_POOL_MAX`, `DATABASE_CA` | Pool PostgreSQL, certificat CA | 10 / – |
 | `STRIPE_UI_MODE` | `embedded` (formulaire dans le site) ou `hosted` | embedded |
 
+## Offre gratuite (2 boîtes)
+Tout compte **sans abonnement** a droit à **2 boîtes** (`PLANS.free`, `workspace.free`) sur **son propre domaine** (acheté ici ou connecté et vérifié). Aucune ligne d'abonnement, aucun paiement, aucun rappel ; un abonnement payant la remplace (limite de l'offre payante). Un abonnement **existant mais impayé ou résilié ne retombe pas en gratuit** (boîtes suspendues jusqu'au règlement). Garde-fous contre l'abus : domaine vérifié par Purelymail avant toute boîte, 2 boîtes maximum, création verrouillée par compte. **Pas de vérification d'e-mail à l'inscription** : surveillez les créations de boîtes (journal `Boîte … créée`) et les plaintes de spam, qui engagent votre compte Purelymail.
+
 ## À savoir / limites (honnêtement)
 1. **Pas de remboursement automatique Pay'm** : l'API ne renvoie pas le numéro du payeur. Un échec après paiement met la commande en `needs_attention` et déclenche une **alerte** : remboursement manuel (`GET /api/admin/orders`).
 2. **Cartes bancaires = Stripe** : sans `STRIPE_SECRET_KEY`, réponse `501`. Format d'erreur vérifié contre `api.stripe.com`, paramètres suivis d'après la documentation officielle, mais **aucun paiement réel n'a été fait** : tester en mode test (`sk_test_…`, carte `4242 4242 4242 4242`) puis déclarer le webhook. Les **domaines** sont aussi renouvelés automatiquement (1 an, tentatives à 7 j, 3 j et 1 j avant l'expiration, sauf si le client a désactivé le renouvellement automatique du domaine, si le domaine est en dry-run, ou si un paiement manuel est en cours) ; une banque exigeant 3-D Secure sur un prélèvement automatique fait échouer la tentative (le client est prévenu et paie depuis son espace).

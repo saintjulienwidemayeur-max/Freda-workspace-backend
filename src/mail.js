@@ -68,8 +68,9 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   const alias = (r) => ({ id: r.id, from: r.from_addr, to: r.to_addr });
 
   const subscription = async (userId) => {
-    const s = await db.get("SELECT * FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due')", userId);
-    if (!s) throw new HttpError(402, 'Activez une offre Freda Mail pour créer des boîtes.', 'no_subscription');
+    const s = await db.get('SELECT * FROM subscriptions WHERE user_id = ?', userId);
+    if (!s) return { user_id: userId, plan: 'free', status: 'active' };   // offre gratuite : 2 boîtes sans paiement
+    if (!['active', 'past_due'].includes(s.status)) throw new HttpError(402, 'Votre offre Freda Mail n’est plus active : réglez-la pour continuer.', 'no_subscription');
     return s;
   };
   const ownDomain = async (userId, domain) => {
@@ -130,7 +131,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     const bid = id('mbx');
     const stale = new Date(Date.now() - 5 * 60_000).toISOString();   // une réservation « creating » abandonnée (crash) cesse de compter au bout de 5 min
     await db.tx(async () => {
-      await db.get('SELECT user_id FROM subscriptions WHERE user_id = ? FOR UPDATE', userId);
+      await db.get('SELECT id FROM users WHERE id = ? FOR UPDATE', userId);   // verrou par client (les comptes gratuits n'ont pas de ligne d'abonnement)
       await db.run("DELETE FROM mailboxes WHERE provider_status = 'creating' AND created_at < ?", stale);
       const count = (await db.get('SELECT COUNT(*) AS n FROM mailboxes WHERE user_id = ?', userId)).n;
       if (count >= plan.mailboxes) throw new HttpError(403, `Votre offre ${plan.name} est limitée à ${plan.mailboxes} boîte${plan.mailboxes > 1 ? 's' : ''}. Passez à une offre supérieure.`, 'plan_limit');
@@ -287,7 +288,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     const b = await db.get('SELECT * FROM mailboxes WHERE address = ?', address);
     if (!b) { await new Promise((r) => setTimeout(r, 150)); throw bad(); }
     const sub = await db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
-    if (b.provider_status === 'suspended' || !sub || ['suspended', 'cancelled'].includes(sub.status)) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
+    if (b.provider_status === 'suspended' || (sub && ['suspended', 'cancelled'].includes(sub.status))) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     let result;
     try { result = await imapLogin({ host: cfg.imap.host, port: cfg.imap.port, secure: cfg.imap.secure, user: address, pass: password }); }
