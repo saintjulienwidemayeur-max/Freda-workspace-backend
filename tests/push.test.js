@@ -71,8 +71,8 @@ test('enregistrement : plateforme et jeton validés ; plateforme non configurée
   none.push.stop();
 });
 
-test('observateur : une boîte avec appareil est surveillée avec SON identifiant de surveillance ; nouveau message -> UNE notification minimale (sans expéditeur ni objet)', async () => {
-  const t = await withPush();
+test('observateur : une boîte avec appareil est surveillée avec SON identifiant de surveillance ; PUSH_PREVIEW=false -> UNE notification minimale (sans expéditeur ni objet)', async () => {
+  const t = await withPush({ env: { PUSH_PREVIEW: 'false' } });
   t.pmState.addMail(U, { subject: 'Ancien message' });               // déjà là avant l'enregistrement : pas de notification
   await t.reg({ platform: 'ios', token: IOS }); await t.ready();
   assert.strictEqual(t.pmState.sessions[U], 1);
@@ -98,14 +98,25 @@ test('rafale : plusieurs messages d’affilée sont regroupés (le total est exa
   t.push.stop();
 });
 
-test('aperçu (PUSH_PREVIEW=true) : expéditeur et objet décodés (RFC 2047) pour un message unique', async () => {
-  const t = await withPush({ env: { PUSH_PREVIEW: 'true' } });
+test('aperçu (par défaut) : expéditeur, objet décodés (RFC 2047) et début du message pour un message unique', async () => {
+  const t = await withPush();
   await t.reg({ platform: 'android', token: ANDROID }); await t.ready();
-  t.pmState.addMail(U, { subject: '=?utf-8?B?RmFjdHVyZSBkZSBqYW52aWVy?=', from: '"Alice Dupont" <alice@example.org>' });
+  t.pmState.addMail(U, { subject: '=?utf-8?B?RmFjdHVyZSBkZSBqYW52aWVy?=', from: '"Alice Dupont" <alice@example.org>', body: 'Bonjour Marie, voici la facture du mois. Merci de régler avant vendredi.' });
   await waitFor(() => t.sent.length === 1);
   assert.strictEqual(t.sent[0].msg.title, 'Alice Dupont');
-  assert.strictEqual(t.sent[0].msg.body, 'Facture de janvier');
+  assert.strictEqual(t.sent[0].msg.body, 'Facture de janvier\nBonjour Marie, voici la facture du mois. Merci de régler avant vendredi.');
+  assert.strictEqual(t.sent[0].msg.data.from, 'Alice Dupont');
   t.push.stop();
+});
+
+test('extrait : quoted-printable, multipart (texte préféré au HTML), HTML dépouillé, base64, citations et liens retirés', () => {
+  const { previewText } = require('../src/mail-preview');
+  assert.strictEqual(previewText('Content-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: quoted-printable', 'Bonjour =C3=A0 tous,=\r\n voil=C3=A0.\r\n> citation\r\nVoir https://x.com/a'), 'Bonjour à tous, voilà. Voir');
+  assert.strictEqual(previewText('Content-Type: multipart/alternative; boundary="b1"', '--b1\r\nContent-Type: text/html\r\n\r\n<p>HTML</p>\r\n--b1\r\nContent-Type: text/plain\r\n\r\nTexte simple\r\n--b1--'), 'Texte simple');
+  assert.strictEqual(previewText('Content-Type: text/html', '<style>p{}</style><div>Salut&nbsp;<b>Jean</b> &amp; Léa</div>'), 'Salut Jean & Léa');
+  assert.strictEqual(previewText('Content-Transfer-Encoding: base64', Buffer.from('Bonjour en base64').toString('base64')), 'Bonjour en base64');
+  assert.strictEqual(previewText('', 'x'.repeat(400), 20), 'x'.repeat(19) + '…');
+  assert.strictEqual(previewText('Content-Type: application/pdf', 'JVBERi0='), '');
 });
 
 test('rattrapage : les messages arrivés pendant une coupure sont notifiés une seule fois au redémarrage, sans doublon', async () => {
