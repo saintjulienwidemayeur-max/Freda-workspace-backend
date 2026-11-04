@@ -294,7 +294,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     const f = failures.get(address);
     if (f && f.n >= MAX_FAILS && Date.now() - f.t < LOCK_MS) throw new HttpError(429, 'Trop de tentatives. Réessayez dans quelques minutes.', 'rate_limited');
     const b = await db.get('SELECT * FROM mailboxes WHERE address = ?', address);
-    if (!b) { await new Promise((r) => setTimeout(r, 150)); throw bad(); }
+    if (!b) { log('info', 'mail_login_failed', { address, reason: 'unknown_address' }); await new Promise((r) => setTimeout(r, 150)); throw bad(); }
     const sub = await db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
     if (b.provider_status === 'suspended' || (sub && ['suspended', 'cancelled'].includes(sub.status))) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
@@ -303,11 +303,13 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     catch (e) { log('warn', 'imap_check_failed', { message: e.message }); throw new HttpError(503, 'Le serveur de messagerie ne répond pas. Réessayez.', 'mail_provider_error'); }
     if (result !== 'ok') {
       const n = f && Date.now() - f.t < LOCK_MS ? f.n + 1 : 1;
+      log('info', 'mail_login_failed', { address, reason: 'imap_denied', attempts: n, passwordLength: password.length });   // jamais le mot de passe lui-même
       failures.set(address, { n, t: Date.now() });
       if (failures.size > 5000) for (const [k, v] of failures) if (Date.now() - v.t > LOCK_MS) failures.delete(k);
       throw bad();
     }
     failures.delete(address);
+    log('info', 'mail_login_ok', { address });
     await db.run('UPDATE mailboxes SET last_login = ? WHERE id = ?', new Date().toISOString(), b.id);
     return { mailbox: { address: b.address, name: b.name, status: 'active' }, token: issueMailboxToken(cfg, b), tokenExpiresInDays: cfg.push.sessionDays, ...connection() };
   }
