@@ -15,15 +15,16 @@ const { imapLogin } = require('./imap');
 const { issueMailboxToken } = require('./auth');
 
 const LOCAL = /^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
-/** Mot de passe de la boîte choisi par le client : 10 à 128 caractères, ni l'adresse ni sa partie locale. */
+/** Mots de passe trop courants refusés (le reste est laissé libre : une phrase de passe simple vaut mieux qu'un code compliqué qu'on note ou qu'on se trompe à saisir). */
+const COMMON_PASSWORDS = new Set(['12345678', '123456789', '1234567890', '87654321', 'password', 'password1', 'motdepasse', 'motdepasse1', 'azertyui', 'azerty123', 'azertyuiop', 'qwerty123', 'qwertyuiop', '11111111', '00000000', 'iloveyou', 'freda123', 'fredamail', 'bienvenue']);
+/** Mot de passe de la boîte choisi par le client : 8 à 128 caractères, pas un mot de passe trop courant, ni le nom de la boîte. */
 function validatePassword(pw, local) {
-  // Règles affichées au client par le frontend (assets/js/api.js, FW.passwordRules) : 12 à 128 caractères, au moins 3 types parmi
-  // minuscules / majuscules / chiffres / symboles, sans le nom de la boîte. Purelymail peut en plus refuser un mot de passe trop courant (invalidPassword).
+  // Règles affichées au client par le frontend (assets/js/api.js, FW.passwordRules). Purelymail peut en plus refuser un mot de passe jugé trop faible (invalidPassword).
   const p = String(pw ?? '');
-  if (p.length < 12 || p.length > 128 || /[\0\r\n]/.test(p)) throw new HttpError(400, 'Le mot de passe de la boîte doit faire entre 12 et 128 caractères.', 'weak_password');
-  const kinds = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^A-Za-z0-9]/].filter((r) => r.test(p)).length;
-  if (kinds < 3) throw new HttpError(400, 'Le mot de passe doit mélanger au moins 3 types parmi : minuscules, majuscules, chiffres et symboles.', 'weak_password');
-  if (local && String(local).length >= 3 && p.toLowerCase().includes(String(local).toLowerCase())) throw new HttpError(400, 'Le mot de passe ne doit pas contenir le nom de la boîte.', 'weak_password');
+  if (p.length < 8 || p.length > 128 || /[\0\r\n]/.test(p)) throw new HttpError(400, 'Le mot de passe de la boîte doit faire entre 8 et 128 caractères.', 'weak_password');
+  const lp = p.toLowerCase();
+  if (COMMON_PASSWORDS.has(lp) || /^(.)\1+$/.test(p)) throw new HttpError(400, 'Ce mot de passe est trop courant. Ajoutez quelques mots ou chiffres, par exemple trois mots séparés par des tirets : cheval-bleu-maison.', 'weak_password');
+  if (local && String(local).length >= 3 && lp === String(local).toLowerCase()) throw new HttpError(400, 'Le mot de passe ne doit pas être le nom de la boîte.', 'weak_password');
   return p;
 }
 const id = (p) => p + '_' + crypto.randomBytes(8).toString('hex');
@@ -37,7 +38,7 @@ function createPurelymail(cfg, log) {
     try { data = await res.json(); } catch (e) { /* corps non JSON */ }
     if (!res.ok || data.type === 'error') {
       log('error', 'purelymail_failed', { endpoint, status: res.status, code: data.code });
-      if (data.code === 'invalidPassword') throw new HttpError(400, 'Le serveur de messagerie a refusé ce mot de passe. Choisissez-en un plus long et moins courant : 14 caractères ou plus, mélangeant lettres, chiffres et symboles, sans mot du dictionnaire ni votre adresse.', 'weak_password');
+      if (data.code === 'invalidPassword') throw new HttpError(400, 'Le serveur de messagerie a refusé ce mot de passe. Choisissez-en un plus long : par exemple quatre mots simples séparés par des tirets et suivis de deux chiffres (cheval-bleu-maison-soleil42).', 'weak_password');
       throw new HttpError(502, 'Le serveur de messagerie n’a pas accepté la demande. Réessayez.', 'mail_provider_error'); }
     return data.result || {};
   }
