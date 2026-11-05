@@ -66,3 +66,25 @@ test('e-mails : le mot de passe n’apparaît jamais dans l’aperçu caché ; n
   await m.send({ to: 'a@b.c', ...templates.subscriptionDue({ name: 'Jean' }, 'Starter', 3, 'https://fredaworkspace.com/espace/facturation.html?renew=1') });
   assert.ok(!/Renouveler mon domaine/.test(m.sent[2].html), 'bouton d’abonnement ≠ bouton de domaine');
 });
+
+test('inscription : lien de confirmation, achats bloqués tant que l’adresse n’est pas vérifiée, lien à usage unique', async () => {
+  const t = await setup({ env: { AUTH_MODE: 'jwt' } });
+  const s = await (await t.api('/api/auth/signup', { method: 'POST', body: { name: 'Paul Test', email: 'paul@example.com', password: 'Motdepasse#2026' } })).json();
+  assert.strictEqual(s.user.emailVerified, false);
+  const mail = t.mailer.sent.find((m) => /Confirmez votre adresse/.test(m.subject));
+  assert.ok(mail, 'e-mail de confirmation envoyé');
+  const token = /verify=([\w-]+)/.exec(mail.text)[1];
+  const auth = { Authorization: 'Bearer ' + s.token };
+  const buy = () => t.api('/api/checkout', { method: 'POST', headers: auth, body: { kind: 'topup', amount: 10, method: 'moncash' } });
+  const blocked = await buy();
+  assert.strictEqual(blocked.status, 403);
+  assert.strictEqual((await blocked.json()).code, 'email_not_verified');
+  assert.strictEqual((await t.api('/api/mailboxes', { method: 'POST', headers: auth, body: { local: 'contact', domain: 'x.com', name: 'A', password: 'Motdepasse#2026' } })).status, 403);
+  assert.strictEqual((await t.api('/api/auth/verify', { method: 'POST', body: { token: 'faux' } })).status, 400);
+  assert.strictEqual((await t.api('/api/auth/verify', { method: 'POST', body: { token } })).status, 200);
+  assert.strictEqual((await t.api('/api/auth/verify', { method: 'POST', body: { token } })).status, 400, 'usage unique');
+  assert.strictEqual((await (await t.api('/api/me', { headers: auth })).json()).emailVerified, true);
+  assert.notStrictEqual((await buy()).status, 403, 'achat autorisé après confirmation');
+  const r = await t.api('/api/auth/verify/resend', { method: 'POST', headers: auth });
+  assert.strictEqual((await r.json()).alreadyVerified, true);
+});

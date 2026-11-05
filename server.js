@@ -107,6 +107,7 @@ function createApp(deps) {
   route('POST', '/api/auth/login', async (c) => { limit(L.auth, c.ip); return await accounts.login(await c.body(), c.ip); });
   route('POST', '/api/auth/reset', async (c) => { limit(L.auth, c.ip); return await accounts.requestReset((await c.body()).email); });
   route('POST', '/api/auth/reset/confirm', async (c) => { limit(L.auth, c.ip); return await accounts.confirmReset(await c.body()); });
+  route('POST', '/api/auth/verify', async (c) => { limit(L.auth, c.ip); return await accounts.verifyEmail((await c.body()).token); });
   route('POST', '/api/auth/logout', async () => ({ ok: true }));          // jetons sans état : le client oublie le jeton
   route('GET', '/api/auth/oauth/:provider', async (c, p) => ({ redirect: accounts.oauthStart(p[0], c.url.searchParams.get('next') || '') }));
   route('GET', '/api/auth/oauth/:provider/callback', async (c, p) => {
@@ -124,6 +125,7 @@ function createApp(deps) {
 
   /* ----- compte ----- */
   const auth = { auth: true };
+  route('POST', '/api/auth/verify/resend', async (c) => { limit(L.auth, c.user.id); return await accounts.resendVerification(c.user.id); }, auth);
   route('GET', '/api/me', async (c) => (await accounts.me(c.user.id)), auth);
   route('PATCH', '/api/me/company', async (c) => (await accounts.updateProfile(c.user.id, await c.body())), auth);
   route('PATCH', '/api/me', async (c) => (await accounts.updateProfile(c.user.id, await c.body())), auth);
@@ -188,6 +190,7 @@ function createApp(deps) {
   /* ----- achats ----- */
   route('POST', '/api/checkout', async (c) => {
     limit(L.buy, c.user.id);
+    await accounts.requireVerified(c.user.id);   // adresse email confirmée avant tout achat
     const body = await c.body();
     return await orders.create({ user: c.user, body, idempotencyKey: String(c.req.headers['idempotency-key'] || '').slice(0, 100) || null });
   }, auth);
@@ -213,7 +216,7 @@ function createApp(deps) {
 
   /* ----- Freda Mail ----- */
   route('GET', '/api/mailboxes', async (c) => ({ mailboxes: await mail.listBoxes(c.user.id), aliases: await mail.listAliases(c.user.id) }), auth);
-  route('POST', '/api/mailboxes', async (c) => { limit(L.write, c.user.id); return await mail.createBox(c.user.id, await c.body()); }, auth);
+  route('POST', '/api/mailboxes', async (c) => { limit(L.write, c.user.id); await accounts.requireVerified(c.user.id); return await mail.createBox(c.user.id, await c.body()); }, auth);
   route('GET', '/api/domains/:d/mail-ownership', async (c, p) => (await mail.ownership(c.user.id, dec(p[0]))), auth);
   route('GET', '/api/mail/config', async () => mail.connection(), auth);
   /* Connexion de l'application mobile : adresse pro + mot de passe de la boîte (public, limité par IP et par adresse) */

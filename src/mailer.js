@@ -7,7 +7,7 @@ const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const fr = (t) => String(t).replace(/ ([:;!?»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
 const URL_RE = /https?:\/\/[^\s)]+/g;
 const linkify = (t) => fr(esc(t)).replace(/https?:\/\/[^\s)&]+(?:&amp;[^\s)&]+)*/g, (u) => `<a href="${u}" style="color:${C.blue};text-decoration:underline;word-break:break-all">${u}</a>`);
-const CTA = [[/reset=/, 'Choisir un nouveau mot de passe'], [/topup/, 'Recharger mon solde'], [/domaines\.html\?renew=/, 'Renouveler mon domaine'], [/dns\.html/, 'Gérer mon DNS'], [/entreprise\.html/, 'Configurer mon entreprise'], [/facturation\.html/, 'Ouvrir ma facturation'], [/connexion\.html/, 'Me connecter'], [/domaines\.html/, 'Mes domaines']];
+const CTA = [[/verify=/, 'Confirmer mon adresse email'], [/reset=/, 'Choisir un nouveau mot de passe'], [/topup/, 'Recharger mon solde'], [/domaines\.html\?renew=/, 'Renouveler mon domaine'], [/dns\.html/, 'Gérer mon DNS'], [/entreprise\.html/, 'Configurer mon entreprise'], [/facturation\.html/, 'Ouvrir ma facturation'], [/connexion\.html/, 'Me connecter'], [/domaines\.html/, 'Mes domaines']];
 const ctaLabel = (u) => (CTA.find(([re]) => re.test(u)) || [0, 'Ouvrir mon espace'])[1];
 const isSecret = (l) => /^[^\s@]+@\S+ : \S+/.test(l) || /^Mot de passe initial : \S+/.test(l);
 
@@ -92,6 +92,7 @@ const nm = (u) => String((u && u.name) || '').replace(/https?:\/\/\S+/gi, '').re
 const money = (n) => '$' + Number(n).toFixed(2);
 const templates = {
   welcome: (u, app) => ({ subject: 'Bienvenue sur Freda Workspace', text: `Bonjour ${nm(u)},\n\nVotre compte est créé. Configurez votre entreprise et choisissez votre domaine :\n${app}/entreprise.html\n\nL'équipe Freda Workspace` }),
+  verifyEmail: (u, link) => ({ subject: 'Confirmez votre adresse email', text: `Bonjour ${nm(u)},\n\nPour activer vos achats et la création de vos boîtes mail, confirmez votre adresse email (lien valable 24 heures) :\n${link}\n\nSi vous n'êtes pas à l'origine de cette inscription, ignorez ce message.` }),
   reset: (u, link) => ({ subject: 'Réinitialisation de votre mot de passe', text: `Bonjour ${nm(u)},\n\nPour choisir un nouveau mot de passe (lien valable 1 heure) :\n${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.` }),
   receipt: (u, o, app) => ({ subject: `Reçu ${o.reference} · ${money(o.amount)}`, text: `Bonjour ${nm(u)},\n\nNous avons bien reçu votre paiement de ${money(o.amount)} (référence ${o.reference}).\nVos factures sont dans votre espace : ${app}/espace/facturation.html\n\nMerci,\nFreda Workspace` }),
   domainRegistered: (u, names, app) => ({ subject: names.length > 1 ? 'Vos domaines sont enregistrés' : `Domaine enregistré : ${names[0]}`, text: `Bonjour ${nm(u)},\n\n${names.join(', ')} ${names.length > 1 ? 'sont enregistrés' : 'est enregistré'} sur votre compte.\nGérez le DNS : ${app}/espace/dns.html\n\nFreda Workspace` }),
