@@ -26,6 +26,16 @@ class PaymentError extends Error {
 }
 class RefundNotSupported extends Error { constructor() { super('Remboursement automatique indisponible : à traiter manuellement.'); this.name = 'RefundNotSupported'; } }
 
+/** Cartes seulement (Stripe) : MonCash / NatCash refusés tant que Freda Pay Issuing n'est pas configuré. Rien n'est jamais « payé » sans encaissement. */
+function createCardsOnly() {
+  return {
+    name: 'stripe',
+    async create() { throw new HttpError(501, 'MonCash et NatCash ne sont pas encore disponibles. Payez par carte bancaire.', 'moncash_not_available'); },
+    async verify() { return { status: 'pending' }; },
+    async refund() { throw new RefundNotSupported(); },
+  };
+}
+
 function createDemo() {
   return {
     name: 'demo',
@@ -120,6 +130,7 @@ function createPayments(cfg, log = () => {}, { db } = {}) {
   let base;
   if (cfg.payments.provider === 'paym') base = createPaym(cfg, log);
   else if (cfg.payments.provider === 'issuing') base = createIssuing(cfg, log);
+  else if (cfg.payments.provider === 'stripe') base = createCardsOnly();
   else if (cfg.payments.provider === 'demo') base = createDemo();
   else throw new Error('PAYMENTS_PROVIDER inconnu : ' + cfg.payments.provider);
   if (!cfg.payments.stripe.secretKey || !db) return base;

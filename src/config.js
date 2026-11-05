@@ -56,7 +56,7 @@ function loadConfig(env = process.env) {
       authUrl: env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token', userInfoUrl: env.GOOGLE_USERINFO_URL || 'https://openidconnect.googleapis.com/v1/userinfo' },
     mailer: { provider: env.MAILER || 'console', brevoKey: env.BREVO_API_KEY || '', brevoUrl: env.BREVO_URL || 'https://api.brevo.com/v3/smtp/email', senderEmail: env.MAIL_FROM || 'no-reply@fredaworkspace.com', senderName: env.MAIL_FROM_NAME || 'Freda Workspace' },
     payments: {
-      provider: env.PAYMENTS_PROVIDER || 'demo',                   // demo | paym | issuing (Freda Pay Issuing : MonCash / NatCash)
+      provider: env.PAYMENTS_PROVIDER || 'demo',                   // demo | stripe (cartes seulement) | paym | issuing (Freda Pay Issuing : MonCash / NatCash)
       stripe: {
         paymentMethodConfig: env.STRIPE_PAYMENT_METHOD_CONFIG || '',
         apiVersion: env.STRIPE_API_VERSION || '2026-09-30.endive',                 // version d'API figée (alignée sur Stripe.js « endive » ci-dessous)
@@ -110,6 +110,7 @@ function assertSafe(cfg) {
   if (cfg.namesilo.mode === 'live' && cfg.payments.provider === 'demo') errors.push('NAMESILO_MODE=live avec PAYMENTS_PROVIDER=demo : des domaines réels seraient achetés sans vrai paiement.');
   if (cfg.auth.mode === 'demo' && cfg.nodeEnv === 'production') errors.push('AUTH_MODE=demo interdit avec NODE_ENV=production.');
   if (cfg.auth.mode === 'jwt' && cfg.auth.jwtSecret.length < 32) errors.push('JWT_SECRET (32 caractères minimum) requis avec AUTH_MODE=jwt.');
+  if (cfg.payments.provider === 'stripe' && !cfg.payments.stripe.secretKey) errors.push('STRIPE_SECRET_KEY requise avec PAYMENTS_PROVIDER=stripe.');
   if (cfg.payments.provider === 'paym' && (!cfg.payments.paym.clientId || !cfg.payments.paym.clientSecret)) errors.push('PAYM_CLIENT_ID et PAYM_CLIENT_SECRET requis avec PAYMENTS_PROVIDER=paym.');
   const iss = cfg.payments.issuing;
   if (cfg.payments.provider === 'issuing' && !iss.secretKey) errors.push('FREDA_ISSUING_SECRET_KEY (sk_test_… ou sk_live_…) requise avec PAYMENTS_PROVIDER=issuing.');

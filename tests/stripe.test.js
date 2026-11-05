@@ -367,3 +367,14 @@ test('frais de traitement : carte 3,5 % + 0,40 $, MonCash / NatCash 6 %', () => 
   assert.strictEqual(mobileFee(12.99), 0.78);
   assert.strictEqual(cardFee(0), 0);
 });
+
+test('PAYMENTS_PROVIDER=stripe : MonCash / NatCash refusés (jamais « payés » sans encaissement)', async () => {
+  const { loadConfig, assertSafe } = require('../src/config');
+  const { createPayments } = require('../src/payments');
+  const cfg = loadConfig({ PAYMENTS_PROVIDER: 'stripe', STRIPE_SECRET_KEY: 'sk_test_x', STRIPE_WEBHOOK_SECRET: 'whsec_x', JWT_SECRET: 'x'.repeat(40) });
+  assert.ok(!assertSafe(cfg).some((e) => /PAYMENTS_PROVIDER/.test(e)));
+  const p = createPayments(cfg);
+  assert.strictEqual(p.name, 'stripe');
+  await assert.rejects(() => p.create({ amount: 10, method: 'moncash', reference: 'FP-1' }), (e) => e.status === 501);
+  assert.strictEqual((await p.verify({})).status, 'pending');
+});
