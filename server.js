@@ -26,6 +26,7 @@ const { createWorkspace } = require('./src/workspace');
 const { createDomainSettings } = require('./src/domain-settings');
 const { createOverview } = require('./src/admin-overview');
 const { createBalance } = require('./src/balance');
+const { createPlans } = require('./src/plans');
 
 const MAX_BODY = 32 * 1024;
 
@@ -51,16 +52,17 @@ function createApp(deps) {
   const mailer = deps.mailer || createMailer(cfg, logger);
   const alert = deps.alert || createAlerts(cfg, logger);
   const payments = deps.payments || createPayments(cfg, logger, { db });
-  const priceBook = createPriceBook({ registrar, cfg });
+  const priceBook = createPriceBook({ registrar, cfg, db });
   const catalog = createDomainCatalog({ cfg, registrar, priceBook, alert, log: logger });
   const accounts = createAccounts({ cfg, db, mailer, log: logger });
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
   const vault = createVault(cfg);
   const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider, dns, vault, mailer });
   const balance = createBalance({ db });
-  const orders = createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger, balance });
+  const plans = createPlans({ cfg, db });
+  const orders = createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger, balance, plans });
   const subscription = createSubscription({ cfg, db, mailer });
-  const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger, balance });
+  const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger, balance, plans });
   orders.hooks.afterTopup = (userId) => jobs.payForUser(userId);
   const workspace = createWorkspace({ db, accounts, dns, mail, cfg });
   const settings = createDomainSettings({ db, registrar, mailer, alert, log: logger, cfg });
@@ -86,6 +88,7 @@ function createApp(deps) {
     try { await db.get('SELECT COUNT(*) AS n FROM app_migrations'); } catch (e) { logger('error', 'health_db_failed', { message: e.message }); throw new HttpError(503, 'Base de données inaccessible.', 'db_unavailable'); }   // 503 : Render ne route plus vers une instance sans base
     return { ok: true, database: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled, cards: !!payments.cards };
   });
+  route('GET', '/api/plans', async () => plans.publicView());   // prix des offres (modifiables par l'administrateur) : le site les affiche
   route('GET', '/api/domains/prices', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.prices(); });
   route('GET', '/api/domains/search', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.search(c.url.searchParams.get('q'), c.url.searchParams.get('part')); });
   route('POST', '/api/auth/signup', async (c) => { limit(L.auth, c.ip); return await accounts.signup(await c.body()); });
@@ -155,6 +158,7 @@ function createApp(deps) {
   });
   /* ----- solde prépayé (MonCash / NatCash) ----- */
   route('GET', '/api/balance', async (c) => {
+    await plans.ready;
     const [amount, entries, auto, sub] = await Promise.all([balance.get(c.user.id), balance.entries(c.user.id), balance.autoPay(c.user.id), db.get("SELECT * FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due','suspended')", c.user.id)]);
     const next = sub && !sub.cancel_at_period_end ? { plan: sub.plan, amount: orders.planAmount(sub.plan, sub.cycle), renews: sub.renews_at } : null;
     return { balance: amount, currency: 'USD', balanceHtg: Math.floor(amount * cfg.pricing.htgRate), htgRate: cfg.pricing.htgRate, autoPay: auto, min: cfg.balance.min, max: cfg.balance.max, next: next && { ...next, missing: Math.max(0, Math.round((next.amount - amount) * 100) / 100) }, entries };
@@ -228,6 +232,26 @@ function createApp(deps) {
   route('GET', '/api/admin/brand-dns', async () => dns.brandStatus(), admin);   // marque blanche DNS : vos relais existent-ils ? (vue détaillée)
   route('GET', '/api/admin/overview', async (c) => overview.overview(c.url.searchParams.get('days')), admin);   // tableau de bord administrateur
   route('GET', '/api/admin/domain-prices', async () => catalog.priceTable(), admin);
+  /* prix mensuels des offres (Starter, Business, Enterprise) */
+  route('GET', '/api/admin/plans', async () => plans.view(), admin);
+  route('PUT', '/api/admin/plans', async (c) => {
+    try { await plans.save(await c.body()); } catch (e) { if (e.code === 'invalid_plans') throw new HttpError(400, e.message, 'invalid_plans'); throw e; }
+    logger('info', 'plans_changed', { prices: Object.fromEntries((await plans.view()).plans.map((p) => [p.id, p.monthly])) });
+    return await plans.view();
+  }, admin);
+  /* marge sur les noms de domaine : lecture (avec aperçu ?markupPercent=&minMarkup=, rien n'est enregistré) et modification */
+  route('GET', '/api/admin/pricing', async (c) => {
+    const q = c.url.searchParams;
+    return await catalog.priceTable({ markupPercent: q.has('markupPercent') ? q.get('markupPercent') : undefined, minMarkup: q.has('minMarkup') ? q.get('minMarkup') : undefined });
+  }, admin);
+  route('PUT', '/api/admin/pricing', async (c) => {
+    const b = await c.body();
+    try { await priceBook.save(b.reset === true ? { reset: true } : { markupPercent: b.markupPercent, minMarkup: b.minMarkup }); }
+    catch (e) { if (e.code === 'invalid_pricing') throw new HttpError(400, e.message, 'invalid_pricing'); throw e; }
+    const now = await priceBook.settings();
+    logger('info', 'pricing_changed', { markupPercent: now.markupPercent, minMarkup: now.minMarkup, custom: now.custom });
+    return await catalog.priceTable();
+  }, admin);
   route('GET', '/api/admin/orders', async (c) => ({ orders: await db.all('SELECT id, reference, user_id, kind, status, amount, error, created_at FROM orders WHERE status = ? ORDER BY created_at DESC LIMIT 100', c.url.searchParams.get('status') || 'needs_attention') }), admin);
 
   function limit(limiter, key, msg = 'Trop de tentatives. Réessayez dans une minute.') { if (!limiter(key)) throw new HttpError(429, msg, 'rate_limited'); }

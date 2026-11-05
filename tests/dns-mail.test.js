@@ -133,10 +133,11 @@ test('deux comptes peuvent réclamer le même domaine en attente ; le premier à
 test('boîtes : création (Purelymail), quota de l’offre, doublon, alias, suppression ; mot de passe initial renvoyé une seule fois', async () => {
   const t = await withMail();
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 1);
-  const second = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com' } });
-  assert.strictEqual(second.status, 403, 'Starter = 1 boîte');
-  assert.match((await j(second)).message, /Starter/);
-  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'contact', domain: 'neuf.com' } })).status, 403);
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'support', domain: 'neuf.com' } })).status, 200, 'Starter = 2 boîtes');
+  const third = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'compta', domain: 'neuf.com' } });
+  assert.strictEqual(third.status, 403, 'la 3e boîte dépasse l’offre Starter');
+  assert.match((await j(third)).message, /Starter/);
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'contact', domain: 'neuf.com' } })).status, 403, 'limite atteinte');
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'business', cycle: 'monthly' } });
   const ok = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'ventes', domain: 'neuf.com', name: 'Service ventes' } });
   assert.strictEqual(ok.status, 200);
@@ -261,12 +262,12 @@ test('workspace : dnsConfig indique si les serveurs de noms Freda existent (sino
 
 test('boîtes : deux créations simultanées ne dépassent pas la limite de l’offre ; échec Purelymail rend la place', async () => {
   const t = await withDomain();
-  await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });   // Starter = 1 boîte
+  await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });   // Starter = 2 boîtes
   const mk = (local) => t.user('/api/mailboxes', { method: 'POST', body: { local, domain: 'neuf.com' } });
   const res = await Promise.all([mk('a1'), mk('a2'), mk('a3')]);
-  assert.strictEqual(res.filter((r) => r.status === 200).length, 1, 'une seule boîte pour une offre à 1 boîte');
+  assert.strictEqual(res.filter((r) => r.status === 200).length, 2, 'deux boîtes au plus pour une offre à 2 boîtes');
   assert.ok(res.filter((r) => r.status !== 200).every((r) => r.status === 403), 'les autres reçoivent plan_limit');
-  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 1);
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM mailboxes')).n, 2);
   const t2 = await withDomain();
   await t2.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });
   t2.pmState.fail = true;
@@ -330,7 +331,8 @@ test('offre gratuite : compte sans abonnement = 2 boîtes (drapeau workspace.fre
   w = await (await t.user('/api/workspace')).json();
   assert.strictEqual(w.free, null); assert.strictEqual(w.plan.id, 'starter');
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'a', domain: 'neuf.com' } })).status, 200);
-  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'b', domain: 'neuf.com' } })).status, 403, 'Starter = 1 boîte : la limite payante remplace la gratuité');
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'b', domain: 'neuf.com' } })).status, 200);
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'c', domain: 'neuf.com' } })).status, 403, 'Starter = 2 boîtes : la limite payante s’applique');
 });
 
 test('Purelymail refuse le mot de passe (invalidPassword) : message précis 400 « weak_password », aucune boîte fantôme, la place est rendue', async () => {

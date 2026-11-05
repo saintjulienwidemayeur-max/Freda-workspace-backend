@@ -16,7 +16,7 @@ const DOMAIN_BALANCE_AT_DAYS_LEFT = 7;
 const DOMAIN_RETRY_AT_DAYS_LEFT = [7, 3, 1];             // renouvellement automatique des domaines : 7 j, 3 j et 1 j avant l'expiration
 const RETRY_AT_DAYS_LEFT = [0, -3, -5];                 // tentatives de prélèvement automatique : à l'échéance, puis +3 j et +5 j
 
-function createJobs({ cfg, db, orders, mailer, mail, log, balance }) {
+function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
   const daysLeft = (iso, now) => Math.ceil((new Date(iso + 'T00:00:00Z').getTime() - now.getTime()) / DAY);
 
   /** Adresses à prévenir : l'e-mail d'inscription ET la boîte Freda Mail créée (propriétaire d'abord) : le client voit l'alerte où qu'il lise son courrier. */
@@ -190,6 +190,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance }) {
 
   async function run(now = new Date()) {
     const out = {};
+    if (plans) await plans.ready;
     try { out.sweep = await orders.sweep(); } catch (e) { log('error', 'job_sweep_failed', { message: e.message }); }
     if (cfg.renewals.enabled) {
       try { out.domainReminders = await domainReminders(now); } catch (e) { log('error', 'job_domains_failed', { message: e.message }); }
