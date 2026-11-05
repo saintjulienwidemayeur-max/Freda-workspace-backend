@@ -180,10 +180,16 @@ function createStripe({ cfg, db, log }) {
     return await api('POST', '/v1/refunds', { payment_intent: pi, amount: c, metadata: { reference: order.reference } }, { idem: `refund-${order.reference}-${c || 'full'}` });
   }
 
+  /** Référence de commande d'un paiement (les litiges ne portent pas nos métadonnées : on les relit sur le PaymentIntent). */
+  async function referenceOf(paymentIntentId) {
+    const pi = await api('GET', `/v1/payment_intents/${encodeURIComponent(paymentIntentId)}`);
+    return (pi.metadata && pi.metadata.reference) || '';
+  }
+
   /** Détache la carte chez Stripe quand le client la supprime (elle ne pourra plus être débitée). */
   async function detach(stripePm) { if (enabled && stripePm) await api('POST', `/v1/payment_methods/${encodeURIComponent(stripePm)}/detach`, {}); }
 
-  return { enabled, createCheckout, resumeEmbedded, chargeSaved, verify, refund, detach, saveCard };
+  return { enabled, createCheckout, resumeEmbedded, chargeSaved, verify, refund, referenceOf, detach, saveCard };
 }
 
 module.exports = { createStripe, StripeError, verifySignature, form };

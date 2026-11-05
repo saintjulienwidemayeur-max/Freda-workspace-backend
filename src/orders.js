@@ -165,6 +165,9 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
       const p = parse(o).payload;
       // Contrôle du montant, strict et « fail closed » : un montant payé inconnu ou inférieur à l'attendu ne déclenche jamais l'exécution.
       const short = (expected, paid) => expected > 0 && !(paid >= expected);
+      // « Fail closed » pour de bon : un paiement confirmé par un fournisseur réel doit pouvoir être comparé à un montant attendu (HTG ou cents).
+      // Sans montant enregistré à la création, on ne devine pas : l'exécution attend une vérification humaine.
+      if (!(p.amountHtg > 0) && !(p.amountCents > 0) && payments.name !== 'demo') { await alert('error', 'Paiement confirmé mais aucun montant attendu enregistré pour la commande', { reference: o.reference }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant attendu inconnu.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
       if (short(p.amountHtg, v.amountHtg)) { await alert('error', 'Montant HTG payé inconnu ou inférieur à la commande', { reference: o.reference, expectedHtg: p.amountHtg, paidHtg: v.amountHtg }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
       if (short(p.amountCents, v.amountCents)) { await alert('error', 'Montant carte payé inconnu ou inférieur à la commande', { reference: o.reference, expectedCents: p.amountCents, paidCents: v.amountCents }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
       await fulfill(o.id);
@@ -193,6 +196,32 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
     if (!['awaiting_payment', 'expired'].includes(o.status)) return { found: true, status: o.status };
     await setOrder(o.id, { status: 'payment_failed', error: reason || 'Le paiement n’a pas abouti.' });
     return { found: true, status: 'payment_failed' };
+  }
+
+  /**
+   * Litige (chargeback) ou remboursement d'un paiement par CARTE signalé par Stripe. Ne fait confiance qu'à la référence (le montant à reprendre vient de
+   * NOTRE commande). Recharge de solde : le crédit est repris (le solde peut passer négatif : plus d'achat possible). Autre commande déjà exécutée
+   * (domaine, offre) : on ne peut pas la défaire automatiquement, on alerte l'exploitant. Un remboursement d'une commande non-recharge est ignoré :
+   * c'est le plus souvent le nôtre (enregistrement impossible).
+   * kind : 'dispute' (tout le montant) | 'refund' (partie remboursée : refundedCents / totalCents).
+   */
+  async function reverseByReference(reference, { kind, refundedCents = 0, totalCents = 0 } = {}) {
+    const o = await db.get('SELECT * FROM orders WHERE reference = ?', String(reference || ''));
+    if (!o || o.payment_method !== 'card') return { found: !!o, reversed: false };
+    const executed = ['completed', 'partially_refunded', 'needs_attention'].includes(o.status);
+    if (o.kind !== 'topup') {
+      if (kind === 'dispute' && executed) await alert('error', 'Litige carte sur une commande déjà exécutée : à traiter à la main', { reference: o.reference, kind: o.kind, amount: o.amount, userId: o.user_id });
+      return { found: true, reversed: false };
+    }
+    if (o.status !== 'completed') return { found: true, reversed: false };   // recharge jamais créditée : rien à reprendre
+    const share = kind === 'dispute' || !(totalCents > 0) ? 1 : Math.min(1, Math.max(0, refundedCents / totalCents));
+    const amount = r2(o.amount * share);
+    const done = await balance.reverse(o.user_id, amount, { orderId: o.id, note: kind === 'dispute' ? 'Litige carte : recharge reprise' : 'Remboursement carte : recharge reprise' });
+    if (done) {
+      await activity(o.user_id, 'alert-triangle', kind === 'dispute' ? 'Litige bancaire sur une recharge : le montant a été repris du solde' : 'Recharge remboursée par la banque : le montant a été repris du solde');
+      await alert('error', kind === 'dispute' ? 'Litige carte sur une recharge : solde repris' : 'Recharge remboursée chez Stripe : solde repris', { reference: o.reference, userId: o.user_id, amount, balance: await balance.get(o.user_id) });
+    }
+    return { found: true, reversed: done };
   }
 
   async function status(userId, orderId) {
@@ -402,7 +431,7 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
     return d ? (await catalog.renewalQuote(d.name, years)).amount : null;
   }
 
-  return { create, status, sweep, fulfill, summarize, planAmount, renewalAmount, hooks, confirmByReference, failByReference, paymentSession, cardsEnabled: !!payments.cards };
+  return { create, status, sweep, fulfill, summarize, planAmount, renewalAmount, hooks, confirmByReference, failByReference, reverseByReference, paymentSession, cardsEnabled: !!payments.cards };
 }
 
 module.exports = { createOrders };
