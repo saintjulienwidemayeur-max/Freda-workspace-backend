@@ -19,6 +19,7 @@
  */
 const { HttpError } = require('./errors');
 const { createStripe } = require('./stripe');
+const { mobileFee } = require('./fees');
 
 class PaymentError extends Error {
   constructor(message, status = 402) { super(message); this.name = 'PaymentError'; this.status = status; }
@@ -53,7 +54,7 @@ function createPaym(cfg, log) {
     async create({ amount, method, reference }) {
       if (method === 'card') throw new HttpError(501, 'Les cartes bancaires ne sont pas encore disponibles. Utilisez MonCash ou NatCash.', 'card_not_available');
       if (!['moncash', 'natcash', 'all'].includes(method)) throw new HttpError(400, 'Moyen de paiement inconnu.', 'invalid_method');
-      const montant = Math.ceil(amount * cfg.pricing.htgRate);
+      const montant = Math.ceil((amount + mobileFee(amount)) * cfg.pricing.htgRate);
       if (montant < 20) throw new PaymentError('Montant minimum : 20 HTG.', 400);
       const data = await post('api/paiement-marchand', { client_id: clientId, refference_id: reference, montant, payment_method: method });   // « refference_id » : orthographe de l'API
       if (!data.status || !data.url) throw new PaymentError(data.message || 'URL de paiement manquante. Réessayez.', 502);
@@ -92,7 +93,7 @@ function createIssuing(cfg, log) {
     async create({ amount, method, reference }) {
       if (method === 'card') throw new HttpError(501, 'Les cartes bancaires ne sont pas encore disponibles. Utilisez MonCash ou NatCash.', 'card_not_available');
       if (!['moncash', 'natcash', 'all'].includes(method)) throw new HttpError(400, 'Moyen de paiement inconnu.', 'invalid_method');
-      const montant = htg(amount);
+      const montant = htg(amount + mobileFee(amount));       // frais de traitement MonCash / NatCash : 6 %
       if (montant < 20) throw new PaymentError('Montant minimum : 20 HTG.', 400);
       const data = await call('POST', '/v1/payments', { amount: montant, currency: 'HTG', method, reference });
       if (!data.id || !data.checkout_url) throw new PaymentError('URL de paiement manquante. Réessayez.', 502);

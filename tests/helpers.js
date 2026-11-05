@@ -274,7 +274,7 @@ async function fakeStripe(state) {
       const urlsOk = embedded ? (/\{?.+/.test(f.return_url || '') && !f.success_url && !f.cancel_url && f.redirect_on_completion === 'if_required') : !!f.success_url;
       if (f.mode !== 'payment' || f['payment_method_options[card][setup_future_usage]'] !== 'off_session' || Object.keys(f).some((k) => k.startsWith('payment_method_types')) || !/^cus_/.test(f.customer || '') || !/^\d+$/.test(f['line_items[0][price_data][unit_amount]'] || '') || f['line_items[0][price_data][currency]'] !== 'usd' || !urlsOk || !f.client_reference_id) return err(res, 400, { type: 'invalid_request_error', message: 'bad checkout params' });
       const id = 'cs_' + Object.keys(state.sessions).length;
-      state.sessions[id] = { id, status: 'open', payment_status: 'unpaid', amount_total: Number(f['line_items[0][price_data][unit_amount]']), ref: f.client_reference_id, customer: f.customer, ...(embedded ? { client_secret: id + '_secret_abc', ui_mode: 'embedded_page' } : { url: 'https://checkout.stripe.test/' + id }) };
+      state.sessions[id] = { id, status: 'open', payment_status: 'unpaid', amount_total: Number(f['line_items[0][price_data][unit_amount]']) + Number(f['line_items[1][price_data][unit_amount]'] || 0), ref: f.client_reference_id, customer: f.customer, ...(embedded ? { client_secret: id + '_secret_abc', ui_mode: 'embedded_page' } : { url: 'https://checkout.stripe.test/' + id }) };
       return json(res, 200, state.sessions[id]);
     }
     let m = /^\/v1\/checkout\/sessions\/(cs_\w+)$/.exec(p);
