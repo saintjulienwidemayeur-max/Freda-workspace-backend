@@ -96,7 +96,7 @@ test('solde trop bas avant l’échéance : e-mail « solde insuffisant » à l�
   assert.deepStrictEqual(low.map((m) => m.to).sort(), ['contact@neuf.com', 'paul@example.com']);
   assert.ok(low[0].text.includes('Il manque $' + t.price.toFixed(2)));
   assert.match(low[0].text, /HTG/);
-  assert.match(low[0].text, /facturation\.html\?topup=\d+/);
+  assert.match(low[0].text, /facturation\?topup=\d+/);
   await run(t); await run(t);
   assert.strictEqual(t.mailer.sent.filter((m) => /Solde insuffisant/.test(m.subject)).length, 2, 'pas de doublon au même seuil');
   await t.db.run('UPDATE subscriptions SET renews_at = ?', days(1));        // seuil suivant

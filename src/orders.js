@@ -255,7 +255,7 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
   async function sendReceipt(user, o, amount = o.amount) {
     if (o.payment_method === 'balance') {
       const label = { domain: 'Votre domaine', subscription: 'Votre offre Freda Mail', renewal: 'Le renouvellement de votre domaine' }[o.kind] || 'Votre achat';
-      return mailer.trySend({ to: user.email, ...templates.paidFromBalance(user, { label, amount, balance: await balance.get(o.user_id), link: `${cfg.appUrl}/espace/facturation.html` }) });
+      return mailer.trySend({ to: user.email, ...templates.paidFromBalance(user, { label, amount, balance: await balance.get(o.user_id), link: `${cfg.appUrl}/espace/facturation` }) });
     }
     return mailer.trySend({ to: user.email, ...templates.receipt(user, { ...o, amount }, cfg.appUrl) });
   }
@@ -266,7 +266,7 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
     const now = await balance.get(o.user_id);
     await activity(o.user_id, 'wallet', `Solde rechargé de ${o.amount.toFixed(2)} $ (nouveau solde : ${now.toFixed(2)} $)`);
     await setOrder(o.id, { status: 'completed' });
-    if (added) await mailer.trySend({ to: user.email, ...templates.topupReceipt(user, { amount: o.amount, reference: o.reference, balance: now, link: `${cfg.appUrl}/espace/facturation.html` }) });
+    if (added) await mailer.trySend({ to: user.email, ...templates.topupReceipt(user, { amount: o.amount, reference: o.reference, balance: now, link: `${cfg.appUrl}/espace/facturation` }) });
     if (added && hooks.afterTopup) { try { await hooks.afterTopup(o.user_id); } catch (e) { log('warn', 'after_topup_failed', { message: e.message }); } }   // une offre échue est payée aussitôt
   }
 
@@ -340,7 +340,7 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
       await activity(o.user_id, 'mail-plus', `Offre ${plan.name} ${p.renewal ? 'renouvelée' : 'activée'}`);
     });
     const back = await mail.reactivateMailboxes(o.user_id);      // offre payée à nouveau : les boîtes suspendues rouvrent
-    if (back.mailboxes.length) mailer.trySend({ to: user.email, ...templates.mailboxesReactivated(user, back.mailboxes, cfg.appUrl + '/connexion.html') });
+    if (back.mailboxes.length) mailer.trySend({ to: user.email, ...templates.mailboxesReactivated(user, back.mailboxes, cfg.appUrl + '/connexion') });
     if (back.failed) await alert('warn', 'Boîtes non réactivées (à retenter)', { userId: o.user_id, failed: back.failed });
     let initialPassword = null, mailboxReady = false;
     if (p.domain && !p.renewal) {
@@ -356,7 +356,7 @@ const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Car
           // on prévient l'exploitant ET le client, qui crée sa boîte depuis son espace (Emails, « Ajouter une boîte »).
           log('warn', 'first_mailbox_failed', { message: e.message, code: e.code });
           await alert('warn', 'Offre payée mais première boîte non créée', { userId: o.user_id, order: o.id, address: p.mailbox.local + '@' + p.domain, reason: e.code || e.message });
-          mailer.trySend({ to: user.email, subject: 'Votre offre est active — finalisez votre boîte mail', text: `Votre offre est bien activée, mais la boîte ${p.mailbox.local}@${p.domain} n'a pas pu être créée automatiquement (${e.code === 'domain_pending_verification' ? 'votre domaine n’est pas encore vérifié : les enregistrements DNS peuvent mettre un peu de temps à se propager' : 'incident temporaire'}).\nVous n'avez rien à repayer : ouvrez votre espace, rubrique Emails, puis « Ajouter une boîte » (${cfg.appUrl}/espace/emails.html).\nSi le problème persiste, répondez à ce message.` });
+          mailer.trySend({ to: user.email, subject: 'Votre offre est active — finalisez votre boîte mail', text: `Votre offre est bien activée, mais la boîte ${p.mailbox.local}@${p.domain} n'a pas pu être créée automatiquement (${e.code === 'domain_pending_verification' ? 'votre domaine n’est pas encore vérifié : les enregistrements DNS peuvent mettre un peu de temps à se propager' : 'incident temporaire'}).\nVous n'avez rien à repayer : ouvrez votre espace, rubrique Emails, puis « Ajouter une boîte » (${cfg.appUrl}/espace/emails).\nSi le problème persiste, répondez à ce message.` });
         }
       }
     }

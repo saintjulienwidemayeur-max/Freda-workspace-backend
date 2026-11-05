@@ -92,7 +92,7 @@ function createStripe({ cfg, db, log }) {
    */
   async function createCheckout({ amount, reference, userId, label, orderId }) {
     const customer = await customerFor(userId);
-    const back = (state) => `${cfg.appUrl}/espace/facturation.html?payment=${state}&order=${encodeURIComponent(orderId || '')}`;
+    const back = (state) => `${cfg.appUrl}/espace/facturation?payment=${state}&order=${encodeURIComponent(orderId || '')}`;
     const s = await api('POST', '/v1/checkout/sessions', {
       // PAS de payment_method_types : Checkout propose TOUS les moyens activés dans le Dashboard Stripe (Paramètres > Moyens de paiement) et éligibles pour la devise,
       // le montant et le pays du client. Seule la CARTE est enregistrée pour les prélèvements automatiques (les autres moyens ne servent qu'à ce paiement).

@@ -112,8 +112,8 @@ function createApp(deps) {
   route('GET', '/api/auth/oauth/:provider/callback', async (c, p) => {
     try {
       const r = await accounts.oauthCallback(p[0], { code: c.url.searchParams.get('code') || '', state: c.url.searchParams.get('state') || '' });
-      return { redirect: `${cfg.appUrl}/connexion.html#token=${r.token}${r.next ? '&next=' + encodeURIComponent(r.next) : ''}${r.isNew ? '&new=1' : ''}` };
-    } catch (e) { log('warn', 'oauth_failed', { provider: p[0], code: e.code || 'oauth_failed', status: e.status }); return { redirect: `${cfg.appUrl}/connexion.html#error=${encodeURIComponent(e.code || 'oauth_failed')}` }; }
+      return { redirect: `${cfg.appUrl}/connexion#token=${r.token}${r.next ? '&next=' + encodeURIComponent(r.next) : ''}${r.isNew ? '&new=1' : ''}` };
+    } catch (e) { log('warn', 'oauth_failed', { provider: p[0], code: e.code || 'oauth_failed', status: e.status }); return { redirect: `${cfg.appUrl}/connexion#error=${encodeURIComponent(e.code || 'oauth_failed')}` }; }
   });
   route('POST', '/api/client-errors', async (c) => {   // reçoit les erreurs JavaScript du frontend (ERROR_ENDPOINT de config.js)
     limit(L.errors, c.ip);

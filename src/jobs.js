@@ -3,7 +3,7 @@
  *  1. balayage des paiements en attente (confirmation / expiration) ;
  *  2. rappels d'expiration des domaines (30, 14, 7, 1 jours) et marquage « expired » ;
  *  3. échéances des offres Freda Mail (rappels à 5 et 1 jours, « past_due » à l'échéance, « suspended » après 7 jours).
- * Les rappels pointent vers le site (…/domaines.html?renew=nom) : le lien de paiement Pay'm est créé AU CLIC, donc toujours frais.
+ * Les rappels pointent vers le site (…/domaines?renew=nom) : le lien de paiement Pay'm est créé AU CLIC, donc toujours frais.
  * Les domaines du mode dry-run ne sont pas de vrais domaines : ils sont ignorés.
  */
 const { templates } = require('./mailer');
@@ -100,7 +100,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
       // renouvellement automatique désactivé : on ne prélève rien, mais le client reçoit toujours les rappels (sinon le domaine expirerait en silence)
       if (d.auto_renew && await autoRenewDomainBalance(d, now)) continue; // renouvelé avec le solde : aucun rappel
       if (d.auto_renew && await autoRenewDomain(d, now)) continue;       // renouvelé sur la carte enregistrée : aucun rappel
-      const link = `${cfg.appUrl}/espace/domaines.html?renew=${encodeURIComponent(d.name)}`;
+      const link = `${cfg.appUrl}/espace/domaines?renew=${encodeURIComponent(d.name)}`;
       if (left <= 0 && !(d.renewal_notices & 16)) { await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, 0, link) }); await db.run('UPDATE domains SET renewal_notices = renewal_notices | 16 WHERE id = ?', d.id); sent++; continue; }
       const due = THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(d.renewal_notices & bit));
       if (!due.length) continue;
@@ -142,7 +142,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
       if (s.cancel_at_period_end) {                       // résiliée : jamais de prélèvement ni de rappel ; à la fin de la période payée -> « cancelled » (boîtes suspendues plus bas)
         if (left < 0) {
           await db.run("UPDATE subscriptions SET status = 'cancelled' WHERE user_id = ?", s.user_id);
-          await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended({ name: s.uname }, plan0, `${cfg.appUrl}/espace/facturation.html`) });
+          await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended({ name: s.uname }, plan0, `${cfg.appUrl}/espace/facturation`) });
           log('info', 'subscription_cancelled_ended', { userId: s.user_id });
         }
         continue;
@@ -150,7 +150,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
       if (await autoPayBalance(s, now)) continue;                       // payée avec le solde (même une offre déjà suspendue : le paiement la rouvre)
       if (s.status !== 'suspended' && await autoCharge(s, now)) continue;   // renouvelée automatiquement : ni « past_due » ni rappel
       const user = { name: s.uname };
-      const link = `${cfg.appUrl}/espace/facturation.html?renew=1`;
+      const link = `${cfg.appUrl}/espace/facturation?renew=1`;
       const plan = cfg.plans[s.plan].name;
       if (left < 0 && s.status === 'active') await db.run("UPDATE subscriptions SET status = 'past_due' WHERE user_id = ?", s.user_id);
       if (left < -7 && s.status !== 'suspended') {
@@ -160,7 +160,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
       }
       const price = orders.planAmount(s.plan, s.cycle);
       const have = await balance.get(s.user_id);
-      const topupLink = `${cfg.appUrl}/espace/facturation.html?topup=${Math.max(cfg.balance.min, Math.ceil(price - have))}`;
+      const topupLink = `${cfg.appUrl}/espace/facturation?topup=${Math.max(cfg.balance.min, Math.ceil(price - have))}`;
       /** « Solde insuffisant » (e-mail d'inscription + boîte Freda Mail) ; si le solde suffit mais que le paiement automatique est coupé, simple rappel de paiement. */
       const remind = async (days) => {
         if (have < price - 0.00001) {

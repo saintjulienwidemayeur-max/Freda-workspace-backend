@@ -82,7 +82,7 @@ function createAccounts({ cfg, db, mailer, log }) {
     if (row) {
       const token = crypto.randomBytes(32).toString('base64url');
       await db.run('INSERT INTO password_resets (token_hash, user_id, expires_at) VALUES (?,?,?)', sha(token), row.id, Date.now() + 3600 * 1000);
-      await mailer.trySend({ to: email, ...templates.reset(row, `${cfg.appUrl}/connexion.html?reset=${token}`) });
+      await mailer.trySend({ to: email, ...templates.reset(row, `${cfg.appUrl}/connexion?reset=${token}`) });
     }
     return { ok: true };
   }

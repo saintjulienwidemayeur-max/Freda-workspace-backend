@@ -19,7 +19,7 @@ test('rappels d’expiration : 30 / 14 / 7 / 1 jours, chacun envoyé une seule f
   await run(); assert.strictEqual(t.mailer.sent.length, 0, 'trop tôt');
   await t.db.run('UPDATE domains SET expires_at = ?', days(29)); await run();
   assert.strictEqual(t.mailer.sent.filter((m) => /expire dans/.test(m.subject)).length, 1);
-  assert.match(t.mailer.sent.at(-1).text, /https:\/\/site\.test\/espace\/domaines\.html\?renew=neuf\.com/);
+  assert.match(t.mailer.sent.at(-1).text, /https:\/\/site\.test\/espace\/domaines\?renew=neuf\.com/);
   await run(); assert.strictEqual(t.mailer.sent.filter((m) => /expire dans/.test(m.subject)).length, 1, 'pas de doublon');
   await t.db.run('UPDATE domains SET expires_at = ?', days(6)); await run();
   assert.strictEqual(t.mailer.sent.filter((m) => /expire dans/.test(m.subject)).length, 2);

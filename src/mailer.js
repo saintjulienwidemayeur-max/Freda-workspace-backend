@@ -7,7 +7,7 @@ const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 const fr = (t) => String(t).replace(/ ([:;!?»])/g, '\u00a0$1').replace(/« /g, '«\u00a0');
 const URL_RE = /https?:\/\/[^\s)]+/g;
 const linkify = (t) => fr(esc(t)).replace(/https?:\/\/[^\s)&]+(?:&amp;[^\s)&]+)*/g, (u) => `<a href="${u}" style="color:${C.blue};text-decoration:underline;word-break:break-all">${u}</a>`);
-const CTA = [[/reset=/, 'Choisir un nouveau mot de passe'], [/topup/, 'Recharger mon solde'], [/domaines\.html\?renew=/, 'Renouveler mon domaine'], [/dns\.html/, 'Gérer mon DNS'], [/entreprise\.html/, 'Configurer mon entreprise'], [/facturation\.html/, 'Ouvrir ma facturation'], [/connexion\.html/, 'Me connecter'], [/domaines\.html/, 'Mes domaines']];
+const CTA = [[/reset=/, 'Choisir un nouveau mot de passe'], [/topup/, 'Recharger mon solde'], [/domaines\?renew=/, 'Renouveler mon domaine'], [/dns/, 'Gérer mon DNS'], [/entreprise/, 'Configurer mon entreprise'], [/facturation/, 'Ouvrir ma facturation'], [/connexion/, 'Me connecter'], [/domaines/, 'Mes domaines']];
 const ctaLabel = (u) => (CTA.find(([re]) => re.test(u)) || [0, 'Ouvrir mon espace'])[1];
 const isSecret = (l) => /^[^\s@]+@\S+ : \S+/.test(l) || /^Mot de passe initial : \S+/.test(l);
 
@@ -57,7 +57,7 @@ ${content}
 </td></tr>
 <tr><td style="background:#FFFFFF;border:1px solid ${C.line};border-top:0;border-radius:0 0 16px 16px;padding:0 32px 26px"><div style="border-top:1px solid ${C.line};padding-top:18px;font-size:13px;line-height:1.6;color:${C.slate}">Une question\u00a0? Écrivez-nous à <a href="mailto:support@fredaworkspace.com" style="color:${C.blue}">support@fredaworkspace.com</a>, du lundi au samedi, de 8 h à 18 h (heure d’Haïti), en français, en créole haïtien ou en anglais.</div></td></tr>
 <tr><td style="padding:18px 8px 0;text-align:center;font-size:12px;line-height:1.7;color:${C.slate}">
-<a href="${SITE}" style="color:${C.slate}">fredaworkspace.com</a> &nbsp;·&nbsp; <a href="${SITE}/legal.html#cgu" style="color:${C.slate}">Conditions</a> &nbsp;·&nbsp; <a href="${SITE}/legal.html#confidentialite" style="color:${C.slate}">Confidentialité</a><br>
+<a href="${SITE}" style="color:${C.slate}">fredaworkspace.com</a> &nbsp;·&nbsp; <a href="${SITE}/legal#cgu" style="color:${C.slate}">Conditions</a> &nbsp;·&nbsp; <a href="${SITE}/legal#confidentialite" style="color:${C.slate}">Confidentialité</a><br>
 © ${new Date().getFullYear()} Freda Pay LLC. Tous droits réservés. Freda Workspace est une marque de Freda Pay LLC.<br>30 N Gould St Ste R, Sheridan, WY 82801, USA</td></tr>
 </table></td></tr></table></body></html>`;
 }
@@ -91,10 +91,10 @@ function createMailer(cfg, log) {
 const nm = (u) => String((u && u.name) || '').replace(/https?:\/\/\S+/gi, '').replace(/[\r\n\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60);
 const money = (n) => '$' + Number(n).toFixed(2);
 const templates = {
-  welcome: (u, app) => ({ subject: 'Bienvenue sur Freda Workspace', text: `Bonjour ${nm(u)},\n\nVotre compte est créé. Configurez votre entreprise et choisissez votre domaine :\n${app}/entreprise.html\n\nL'équipe Freda Workspace` }),
+  welcome: (u, app) => ({ subject: 'Bienvenue sur Freda Workspace', text: `Bonjour ${nm(u)},\n\nVotre compte est créé. Configurez votre entreprise et choisissez votre domaine :\n${app}/entreprise\n\nL'équipe Freda Workspace` }),
   reset: (u, link) => ({ subject: 'Réinitialisation de votre mot de passe', text: `Bonjour ${nm(u)},\n\nPour choisir un nouveau mot de passe (lien valable 1 heure) :\n${link}\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message.` }),
-  receipt: (u, o, app) => ({ subject: `Reçu ${o.reference} · ${money(o.amount)}`, text: `Bonjour ${nm(u)},\n\nNous avons bien reçu votre paiement de ${money(o.amount)} (référence ${o.reference}).\nVos factures sont dans votre espace : ${app}/espace/facturation.html\n\nMerci,\nFreda Workspace` }),
-  domainRegistered: (u, names, app) => ({ subject: names.length > 1 ? 'Vos domaines sont enregistrés' : `Domaine enregistré : ${names[0]}`, text: `Bonjour ${nm(u)},\n\n${names.join(', ')} ${names.length > 1 ? 'sont enregistrés' : 'est enregistré'} sur votre compte.\nGérez le DNS : ${app}/espace/dns.html\n\nFreda Workspace` }),
+  receipt: (u, o, app) => ({ subject: `Reçu ${o.reference} · ${money(o.amount)}`, text: `Bonjour ${nm(u)},\n\nNous avons bien reçu votre paiement de ${money(o.amount)} (référence ${o.reference}).\nVos factures sont dans votre espace : ${app}/espace/facturation\n\nMerci,\nFreda Workspace` }),
+  domainRegistered: (u, names, app) => ({ subject: names.length > 1 ? 'Vos domaines sont enregistrés' : `Domaine enregistré : ${names[0]}`, text: `Bonjour ${nm(u)},\n\n${names.join(', ')} ${names.length > 1 ? 'sont enregistrés' : 'est enregistré'} sur votre compte.\nGérez le DNS : ${app}/espace/dns\n\nFreda Workspace` }),
   paymentLink: (u, label, link, due) => ({ subject: `À payer : ${label}`, text: `Bonjour ${nm(u)},\n\n${label} arrive à échéance le ${due}. Réglez-le ici (MonCash / NatCash) :\n${link}\n\nSans paiement avant cette date, le service pourrait être suspendu.\nFreda Workspace` }),
   domainExpiring: (u, name, days, link) => ({ subject: days > 0 ? `Le domaine ${name} expire dans ${days} jour${days > 1 ? 's' : ''}` : `Le domaine ${name} a expiré`, text: `Bonjour ${nm(u)},\n\n${days > 0 ? `${name} expire dans ${days} jour${days > 1 ? 's' : ''}.` : `${name} a expiré.`} Renouvelez-le en quelques clics (MonCash / NatCash) :\n${link}\n\nFreda Workspace` }),
   subscriptionDue: (u, plan, days, link) => ({ subject: days > 0 ? `Votre offre ${plan} se renouvelle dans ${days} jour${days > 1 ? 's' : ''}` : `Votre offre ${plan} est à régler`, text: `Bonjour ${nm(u)},\n\nVotre offre Freda Mail ${plan} ${days > 0 ? `se renouvelle dans ${days} jour${days > 1 ? 's' : ''}` : 'est arrivée à échéance'}. Réglez-la ici (MonCash / NatCash) :\n${link}\n\nFreda Workspace` }),

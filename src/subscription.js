@@ -22,7 +22,7 @@ function createSubscription({ cfg, db, mailer }) {
     await db.run('UPDATE subscriptions SET cancel_at_period_end = 1 WHERE user_id = ?', userId);
     await activity(userId, 'circle-slash', `Offre ${cfg.plans[s.plan].name} résiliée : active jusqu’au ${s.renews_at}`);
     const u = await db.get('SELECT * FROM users WHERE id = ?', userId);
-    mailer.trySend({ to: u.email, ...templates.subscriptionCancelled(u, cfg.plans[s.plan].name, s.renews_at, `${cfg.appUrl}/espace/facturation.html`) });
+    mailer.trySend({ to: u.email, ...templates.subscriptionCancelled(u, cfg.plans[s.plan].name, s.renews_at, `${cfg.appUrl}/espace/facturation`) });
     return await view(userId);
   }
 

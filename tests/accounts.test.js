@@ -112,7 +112,7 @@ test('Google OAuth : crée le compte, rattache l’e-mail existant, refuse un é
   const cb = await t.api(`/api/auth/oauth/google/callback?code=good&state=${state}`, { redirect: 'manual' });
   assert.strictEqual(cb.status, 302);
   const dest = cb.headers.get('location');
-  assert.match(dest, /^https:\/\/site\.test\/connexion\.html#token=[\w.-]+&next=espace%2Findex\.html&new=1$/);
+  assert.match(dest, /^https:\/\/site\.test\/connexion#token=[\w.-]+&next=espace%2Findex\.html&new=1$/);
   const token = /token=([\w.-]+)/.exec(dest)[1];
   assert.strictEqual((await (await t.api('/api/me', { headers: { Authorization: 'Bearer ' + token } })).json()).email, 'google.user@example.com');
   // deuxième connexion : même compte

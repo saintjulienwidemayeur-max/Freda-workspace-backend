@@ -63,6 +63,6 @@ test('e-mails : le mot de passe n’apparaît jamais dans l’aperçu caché ; n
   assert.ok(m.sent[0].html.includes('Xk9#mQ2vLp'), 'le mot de passe reste dans le corps');
   await m.send({ to: 'a@b.c', ...templates.welcome({ name: 'Eve\n\nhttps://evil.example/phish' }, 'https://fredaworkspace.com') });
   assert.ok(!/evil\.example/.test(m.sent[1].html) && !/evil\.example/.test(m.sent[1].text), 'URL retirée du nom');
-  await m.send({ to: 'a@b.c', ...templates.subscriptionDue({ name: 'Jean' }, 'Starter', 3, 'https://fredaworkspace.com/espace/facturation.html?renew=1') });
+  await m.send({ to: 'a@b.c', ...templates.subscriptionDue({ name: 'Jean' }, 'Starter', 3, 'https://fredaworkspace.com/espace/facturation?renew=1') });
   assert.ok(!/Renouveler mon domaine/.test(m.sent[2].html), 'bouton d’abonnement ≠ bouton de domaine');
 });
