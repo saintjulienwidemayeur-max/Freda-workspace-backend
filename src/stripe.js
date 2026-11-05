@@ -56,7 +56,7 @@ function createStripe({ cfg, db, log }) {
     });
     let data = {};
     try { data = await res.json(); } catch (e) { throw new StripeError(502, { message: 'Réponse Stripe illisible' }); }
-    if (!res.ok) { log('warn', 'stripe_error', { path, status: res.status, code: data.error && data.error.code, type: data.error && data.error.type }); throw new StripeError(res.status, data.error || {}); }
+    if (!res.ok) { log('warn', 'stripe_error', { path, status: res.status, code: data.error && data.error.code, type: data.error && data.error.type, param: data.error && data.error.param, message: data.error && String(data.error.message || '').slice(0, 300) }); throw new StripeError(res.status, data.error || {}); }
     return data;
   }
 
