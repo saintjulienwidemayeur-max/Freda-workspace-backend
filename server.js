@@ -25,6 +25,7 @@ const { createJobs } = require('./src/jobs');
 const { createWorkspace } = require('./src/workspace');
 const { createDomainSettings } = require('./src/domain-settings');
 const { createOverview } = require('./src/admin-overview');
+const { createBalance } = require('./src/balance');
 
 const MAX_BODY = 32 * 1024;
 
@@ -56,16 +57,18 @@ function createApp(deps) {
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
   const vault = createVault(cfg);
   const mail = createMail({ cfg, db, log: logger, provider: deps.mailProvider, dns, vault, mailer });
-  const orders = createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger });
+  const balance = createBalance({ db });
+  const orders = createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log: logger, balance });
   const subscription = createSubscription({ cfg, db, mailer });
-  const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger });
+  const jobs = createJobs({ cfg, db, orders, mailer, mail, log: logger, balance });
+  orders.hooks.afterTopup = (userId) => jobs.payForUser(userId);
   const workspace = createWorkspace({ db, accounts, dns, mail, cfg });
   const settings = createDomainSettings({ db, registrar, mailer, alert, log: logger, cfg });
   const authenticate = createAuthenticator(cfg, db);
   const authenticateMailbox = createMailboxAuthenticator(cfg, db);
   const pushSenders = deps.pushSenders || createSenders(cfg);
   const push = createPush({ cfg, db, log: logger, vault, mail, senders: pushSenders, debounceMs: deps.pushDebounceMs });
-  const overview = createOverview({ cfg, db, payments, mail, senders: pushSenders });
+  const overview = createOverview({ cfg, db, payments, mail, senders: pushSenders, balance });
 
   const photos = createPhotos({ db });
 
@@ -150,6 +153,20 @@ function createApp(deps) {
     else if (event.event === 'payment.failed' && ref) await orders.failByReference(ref, 'Le paiement n’a pas abouti. Aucun montant n’a été débité : réessayez.');
     return { received: true };
   });
+  /* ----- solde prépayé (MonCash / NatCash) ----- */
+  route('GET', '/api/balance', async (c) => {
+    const [amount, entries, auto, sub] = await Promise.all([balance.get(c.user.id), balance.entries(c.user.id), balance.autoPay(c.user.id), db.get("SELECT * FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due','suspended')", c.user.id)]);
+    const next = sub && !sub.cancel_at_period_end ? { plan: sub.plan, amount: orders.planAmount(sub.plan, sub.cycle), renews: sub.renews_at } : null;
+    return { balance: amount, currency: 'USD', balanceHtg: Math.floor(amount * cfg.pricing.htgRate), htgRate: cfg.pricing.htgRate, autoPay: auto, min: cfg.balance.min, max: cfg.balance.max, next: next && { ...next, missing: Math.max(0, Math.round((next.amount - amount) * 100) / 100) }, entries };
+  }, auth);
+  route('PATCH', '/api/balance', async (c) => {
+    limit(L.write, c.user.id);
+    const b = await c.body();
+    if (typeof b.autoPay !== 'boolean') throw new HttpError(400, 'Réglage invalide.', 'invalid_body');
+    await balance.setAutoPay(c.user.id, b.autoPay);
+    if (b.autoPay) await jobs.payForUser(c.user.id).catch(() => 0);   // rallumé : si une échéance attend et que le solde suffit, elle est payée tout de suite
+    return { autoPay: b.autoPay };
+  }, auth);
   route('GET', '/api/invoices', async (c) => ({ invoices: (await workspace(c.user.id)).invoices }), auth);
 
   /* ----- achats ----- */
