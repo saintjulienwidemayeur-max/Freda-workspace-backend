@@ -58,13 +58,20 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
   /** Devis d'achat : revérifie la disponibilité, calcule le prix côté serveur, contrôle le solde du compte NameSilo. */
   async function quote(names, years) {
     if (!Number.isInteger(years) || years < 1 || years > cfg.maxYears) throw new HttpError(400, 'Durée invalide.', 'invalid_years');
-    const uniq = [...new Set(names.map((d) => String(d).trim().toLowerCase()))];
+    const uniq = [...new Set(names.map((d) => String(d).trim().toLowerCase().replace(/^www\./, '')))];
+    if (uniq.some((d) => /\.ht$/.test(d))) throw new HttpError(400, 'Le .ht arrive bientôt chez Freda Connect : il n’est pas encore en vente.', 'tld_coming_soon');
     if (!uniq.length || uniq.length > 5) throw new HttpError(400, 'Choisissez entre 1 et 5 domaines.', 'invalid_domains');
     const parsed = uniq.map((d) => parseDomain(d, cfg.tlds));
     if (parsed.some((p) => !p)) throw new HttpError(400, 'Un des noms de domaine est invalide ou son extension n’est pas proposée.', 'invalid_domain');
-    let avail;
-    try { avail = await registrar.checkAvailability(parsed.map((p) => p.domain)); }
-    catch (e) { log('error', 'availability_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'Le registraire ne répond pas. Aucun paiement n’a été effectué.', 'registrar_error'); }
+    const askNames = parsed.map((p) => p.domain);
+    const check = async () => { try { return await registrar.checkAvailability(askNames); } catch (e) { log('error', 'availability_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'Le registraire ne répond pas. Aucun paiement n’a été effectué.', 'registrar_error'); } };
+    let avail = await check();
+    // Un domaine absent des trois listes (réponse partielle ou vide du registraire) n'est PAS « indisponible » : on revérifie une fois, puis on demande de réessayer.
+    const unknownOf = (a) => askNames.filter((n) => ![...a.available.map((d) => d.domain), ...a.unavailable, ...a.invalid].includes(n));
+    if (unknownOf(avail).length) {
+      await new Promise((r) => setTimeout(r, 600)); avail = await check();
+      if (unknownOf(avail).length) { log('warn', 'quote_registrar_incomplete', { asked: askNames, missing: unknownOf(avail) }); throw new HttpError(502, 'Le registraire n’a pas répondu pour ce nom. Réessayez dans un instant ; aucun paiement n’a été effectué.', 'registrar_error'); }
+    }
     const ok = new Set(avail.available.filter(sellable).map((d) => d.domain));
     const unavailable = parsed.filter((p) => !ok.has(p.domain)).map((p) => p.domain);
     if (unavailable.length) {

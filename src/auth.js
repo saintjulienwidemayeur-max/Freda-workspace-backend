@@ -42,8 +42,8 @@ function verifyJwt(token, secret) {
 
 /** Fabrique le jeton de session d'un utilisateur. */
 function issueToken(cfg, user) {
-  const now = Math.floor(Date.now() / 1000);
-  return signJwt({ sub: user.id, email: user.email, iat: now, exp: now + cfg.auth.tokenTtlHours * 3600 }, cfg.auth.jwtSecret);
+  const ms = Date.now(), now = Math.floor(ms / 1000);
+  return signJwt({ sub: user.id, email: user.email, iat: now, iatMs: ms, exp: now + cfg.auth.tokenTtlHours * 3600 }, cfg.auth.jwtSecret);
 }
 
 /**
@@ -83,9 +83,10 @@ function createAuthenticator(cfg, db) {
     const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
     if (!m) throw new AuthError();
     const payload = verifyJwt(m[1], cfg.auth.jwtSecret);
-    const u = await db.get('SELECT id, email FROM users WHERE id = ?', String(payload.sub));
+    const u = await db.get('SELECT id, email, tokens_valid_after FROM users WHERE id = ?', String(payload.sub));
     if (!u) throw new AuthError();                                      // compte supprimé : jeton refusé
-    return u;
+    if (Number(u.tokens_valid_after) > 0 && !((payload.iatMs || payload.iat * 1000) >= Number(u.tokens_valid_after))) throw new AuthError('Session expirée : reconnectez-vous.');   // mot de passe changé depuis
+    return { id: u.id, email: u.email };
   };
 }
 

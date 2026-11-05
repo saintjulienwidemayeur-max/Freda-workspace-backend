@@ -26,9 +26,11 @@ services:
       - key: ALLOWED_ORIGINS
         value: https://fredaworkspace.com,https://www.fredaworkspace.com   # toute origine absente d'ici affiche « Failed to fetch » ; ajoutez l'URL *.onrender.com du site si vous l'utilisez
       - key: NAMESILO_MODE
-        value: dry-run          # passer à live seulement quand Pay'm est branché et testé
+        sync: false             # live en production (le tableau de bord Render fait foi : une valeur écrite ici écraserait le réglage à chaque synchronisation du blueprint)
       - key: PAYMENTS_PROVIDER
-        value: paym             # « demo » est refusé en production (commandes gratuites)
+        sync: false             # issuing (MonCash / NatCash + cartes Stripe) ou stripe (cartes seulement) ; « demo » est refusé en production
+      - key: TRUSTED_PROXY_HOPS
+        value: 1                # Render ajoute 1 proxy : l'IP du client est la dernière entrée de X-Forwarded-For
       - key: MAILER
         value: brevo
       - key: NAMESILO_API_KEY

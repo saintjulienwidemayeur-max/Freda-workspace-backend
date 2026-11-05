@@ -125,8 +125,14 @@ function createStripe({ cfg, db, log }) {
     const m = await db.get("SELECT * FROM payment_methods WHERE id = ? AND user_id = ? AND type = 'card' AND stripe_pm <> ''", methodId, userId);
     if (!m) throw new HttpError(404, 'Carte enregistrée introuvable.', 'not_found');
     const customer = await customerFor(userId);
+    const total = cents(amount) + cents(cardFee(amount));
+    const attempt = () => api('POST', '/v1/payment_intents', { amount: total, currency: 'usd', customer, payment_method: m.stripe_pm, off_session: true, confirm: true, description: label, metadata: { reference } }, { idem: 'pi-' + reference });
     try {
-      const pi = await api('POST', '/v1/payment_intents', { amount: cents(amount) + cents(cardFee(amount)), currency: 'usd', customer, payment_method: m.stripe_pm, off_session: true, confirm: true, description: label, metadata: { reference } }, { idem: 'pi-' + reference });
+      let pi;
+      // Timeout / erreur réseau / 5xx : la carte a peut-être été débitée. On rejoue UNE fois avec la même clé d'idempotence (jamais de double débit) ;
+      // si le doute demeure, la commande reste « en attente » et verify() retrouve le paiement chez Stripe par sa référence.
+      try { pi = await attempt(); }
+      catch (e0) { if (e0 instanceof StripeError && e0.status < 500) throw e0; log('warn', 'stripe_charge_uncertain_retry', { reference }); try { pi = await attempt(); } catch (e1) { if (e1 instanceof StripeError && e1.status < 500) throw e1; log('error', 'stripe_charge_uncertain', { reference, message: e1.message }); return { status: 'pending', providerRef: '', amountCents: total }; } }
       if (pi.status === 'succeeded') return { status: 'paid', providerRef: pi.id, amountCents: pi.amount_received || pi.amount };
       throw new StripeError(402, { code: 'requires_action', message: 'Authentification de la banque requise.' });
     } catch (e) {
@@ -145,7 +151,16 @@ function createStripe({ cfg, db, log }) {
 
   /** État réel du paiement, lu chez Stripe. Enregistre la carte au passage. */
   async function verify({ order }) {
-    if (!order.charge_id) return { status: 'pending' };
+    if (!order.charge_id) {
+      // débit incertain (timeout) : on cherche le paiement chez Stripe par la référence de commande
+      try {
+        const r = await api('GET', '/v1/payment_intents/search', { query: `metadata['reference']:'${String(order.reference).replace(/[^\w-]/g, '')}'`, limit: 1 });
+        const pi = r.data && r.data[0];
+        if (pi && pi.status === 'succeeded') return { status: 'paid', amountCents: pi.amount_received || pi.amount, paymentIntent: pi.id };
+        if (pi && ['canceled', 'requires_payment_method'].includes(pi.status)) return { status: 'failed' };
+      } catch (e) { log('warn', 'stripe_lookup_failed', { message: e.message }); }
+      return { status: 'pending' };
+    }
     if (order.charge_id.startsWith('pi_')) {
       const pi = await api('GET', `/v1/payment_intents/${order.charge_id}`);
       return { status: pi.status === 'succeeded' ? 'paid' : 'pending', amountCents: pi.amount_received || 0 };

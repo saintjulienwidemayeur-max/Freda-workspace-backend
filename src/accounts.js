@@ -71,8 +71,8 @@ function createAccounts({ cfg, db, mailer, log }) {
     const row = await db.get('SELECT * FROM users WHERE id = ?', userId);
     if (String(newPassword || '').length < 8) throw new HttpError(400, 'Le nouveau mot de passe doit contenir au moins 8 caractères.', 'weak_password');
     if (row.password_hash && !verifyPassword(oldPassword, row.password_hash)) throw new HttpError(403, 'Mot de passe actuel incorrect.', 'invalid_credentials');
-    await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(newPassword), userId);
-    return { ok: true };
+    await db.run('UPDATE users SET password_hash = ?, tokens_valid_after = ? WHERE id = ?', hashPassword(newPassword), Date.now(), userId);   // les autres sessions sont déconnectées
+    return { ok: true, token: issueToken(cfg, row) };   // nouvelle session pour l'appareil courant
   }
 
   /* ---------- Réinitialisation du mot de passe : toujours la même réponse (pas de fuite sur l'existence du compte) ---------- */
@@ -92,7 +92,7 @@ function createAccounts({ cfg, db, mailer, log }) {
     if (!r || r.used || r.expires_at < Date.now()) throw new HttpError(400, 'Ce lien est invalide ou a expiré. Demandez-en un nouveau.', 'invalid_token');
     await db.tx(async () => {
       await db.run('UPDATE password_resets SET used = 1 WHERE token_hash = ?', r.token_hash);
-      await db.run('UPDATE users SET password_hash = ? WHERE id = ?', hashPassword(password), r.user_id);
+      await db.run('UPDATE users SET password_hash = ?, tokens_valid_after = ? WHERE id = ?', hashPassword(password), Date.now(), r.user_id);
     });
     return await session(await db.get('SELECT * FROM users WHERE id = ?', r.user_id));
   }
@@ -145,7 +145,7 @@ function createAccounts({ cfg, db, mailer, log }) {
     return (await db.all('SELECT * FROM payment_methods WHERE user_id = ? ORDER BY is_default DESC, created_at', userId)).map((m) => ({ id: m.id, type: m.type, phone: m.phone ? mask(m.phone) : '', brand: m.brand, last4: m.last4, exp: m.exp, default: !!m.is_default }));
   }
   async function addMethod(userId, b) {
-    if (b.type === 'card') throw new HttpError(400, 'Une carte s’enregistre automatiquement lors de votre premier paiement par carte (saisie sécurisée chez Stripe).', 'card_via_payment');
+    if (b.type === 'card') throw new HttpError(400, 'Une carte s’enregistre automatiquement lors de votre premier paiement par carte (saisie sécurisée chez notre prestataire de paiement).', 'card_via_payment');
     if (!['moncash', 'natcash'].includes(b.type)) throw new HttpError(400, 'Moyen de paiement inconnu.', 'invalid_method');
     const digits = String(b.phone || '').replace(/\D/g, '');
     const phone = digits.length === 8 ? '509' + digits : digits;

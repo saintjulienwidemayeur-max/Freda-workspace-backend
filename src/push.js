@@ -26,6 +26,7 @@ const IDLE_MS = 25 * 60 * 1000;
 function connectImap({ host, port, secure }) {
   return new Promise((resolve, reject) => {
     const sock = secure ? tls.connect({ host, port, servername: host }) : net.connect({ host, port });
+    sock.setKeepAlive(true, 30_000);   // détecte une connexion à moitié morte (réveil de Render, NAT) au lieu d'attendre indéfiniment
     let buf = '', cur = null, greeted = false, onGreeting = null;
     const api = {
       sock,
@@ -95,12 +96,13 @@ function watchMailbox({ imap, user, pass, getLastUid, setLastUid, onNew, onDenie
     await catchUp();
     for (;;) {
       let done = false, timer;
-      const send = () => { if (!done) { done = true; clearTimeout(timer); conn.write('DONE\r\n'); } };
+      let hard;
+      const send = () => { if (!done) { done = true; clearTimeout(timer); conn.write('DONE\r\n'); hard = setTimeout(() => conn.close(), 30_000); hard.unref(); } };   // le serveur doit répondre à DONE : sinon la connexion est coupée (et rétablie)
       const idle = conn.run(`w${++n}`, 'IDLE', {
         onContinue: () => { readyRes(true); timer = setTimeout(send, IDLE_MS); timer.unref(); },
         onUntagged: (l) => { if (/^\* \d+ EXISTS/i.test(l)) send(); },
       });
-      try { await idle; } finally { clearTimeout(timer); }      // le minuteur ne survit jamais à la connexion
+      try { await idle; } finally { clearTimeout(timer); clearTimeout(hard); }      // le minuteur ne survit jamais à la connexion
       if (stopped) return;
       const st = await conn.run(`w${++n}`, 'STATUS INBOX (UIDNEXT)');
       const u = uidnextOf(st.lines); if (u !== null) uidnext = u;
