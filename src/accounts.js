@@ -11,7 +11,7 @@ const str = (v, max) => String(v ?? '').trim().slice(0, max);
 const COMPANY_FIELDS = { company: 'company', taxId: 'tax_id', address: 'address', city: 'city', country: 'country', billingEmail: 'billing_email', phone: 'phone', name: 'name', language: 'language' };
 
 function publicUser(r) {
-  return { id: r.id, name: r.name, email: r.email, phone: r.phone, company: r.company, taxId: r.tax_id, address: r.address, city: r.city, country: r.country, billingEmail: r.billing_email, language: r.language };
+  return { id: r.id, name: r.name, email: r.email, phone: r.phone, company: r.company, taxId: r.tax_id, address: r.address, city: r.city, country: r.country, billingEmail: r.billing_email, language: r.language, emailVerified: !!r.email_verified };
 }
 
 function createAccounts({ cfg, db, mailer, log }) {
@@ -21,6 +21,35 @@ function createAccounts({ cfg, db, mailer, log }) {
   const noteFail = (k) => fails.set(k, [...(fails.get(k) || []).filter((t) => Date.now() - t < 15 * 60 * 1000), Date.now()]);
 
   function session(row) { return { token: issueToken(cfg, row), user: publicUser(row) }; }
+
+  /** Envoie (ou renvoie) le lien de confirmation de l'adresse e-mail : jeton aléatoire, stocké haché, valable 24 h, à usage unique. */
+  async function sendVerification(row) {
+    const token = crypto.randomBytes(32).toString('base64url');
+    await db.run('INSERT INTO email_verifications (token_hash, user_id, expires_at) VALUES (?,?,?)', sha(token), row.id, Date.now() + 24 * 3600 * 1000);
+    await mailer.trySend({ to: row.email, ...templates.verifyEmail(row, `${cfg.appUrl}/connexion.html?verify=${token}`) });
+  }
+  async function verifyEmail(token) {
+    const r = await db.get('SELECT * FROM email_verifications WHERE token_hash = ?', sha(String(token || '')));
+    if (!r || r.used || r.expires_at < Date.now()) throw new HttpError(400, 'Ce lien est invalide ou a expiré. Demandez-en un nouveau depuis votre espace.', 'invalid_token');
+    await db.tx(async () => {
+      await db.run('UPDATE email_verifications SET used = 1 WHERE token_hash = ?', r.token_hash);
+      await db.run('UPDATE users SET email_verified = 1 WHERE id = ?', r.user_id);
+    });
+    return { ok: true };
+  }
+  async function resendVerification(userId) {
+    const row = await db.get('SELECT * FROM users WHERE id = ?', userId);
+    if (!row) throw new HttpError(404, 'Compte introuvable.', 'not_found');
+    if (row.email_verified) return { ok: true, alreadyVerified: true };
+    await sendVerification(row);
+    return { ok: true };
+  }
+  /** Achats et création de boîtes réservés aux adresses vérifiées (anti-abus). Mode démo et tâches système : sans contrôle. */
+  async function requireVerified(userId) {
+    if (cfg.auth.mode === 'demo') return;
+    const r = await db.get('SELECT email_verified FROM users WHERE id = ?', userId);
+    if (r && !r.email_verified) throw new HttpError(403, 'Confirmez d’abord votre adresse email : un lien de confirmation vous a été envoyé (vous pouvez en demander un nouveau depuis votre espace).', 'email_not_verified');
+  }
 
   async function signup(b) {
     const email = str(b.email, 200).toLowerCase(), name = str(b.name, 120), password = String(b.password || '');
@@ -32,6 +61,7 @@ function createAccounts({ cfg, db, mailer, log }) {
     await db.run('INSERT INTO users (id, email, name, phone, password_hash, company, created_at) VALUES (?,?,?,?,?,?,?)', uid, email, name, str(b.phone, 30), hashPassword(password), str(b.company, 120), new Date().toISOString());
     const row = await db.get('SELECT * FROM users WHERE id = ?', uid);
     mailer.trySend({ to: email, ...templates.welcome(row, cfg.appUrl) });
+    await sendVerification(row);
     return await session(row);
   }
 
@@ -130,11 +160,12 @@ function createAccounts({ cfg, db, mailer, log }) {
       row = await db.get('SELECT * FROM users WHERE email = ?', email);       // e-mail vérifié par Google : rattaché au compte existant
       if (!row) {
         const uid = id('usr');
-        await db.run('INSERT INTO users (id, email, name, created_at) VALUES (?,?,?,?)', uid, email, str(p.name, 120) || email.split('@')[0], new Date().toISOString());
+        await db.run('INSERT INTO users (id, email, name, created_at, email_verified) VALUES (?,?,?,?,1)', uid, email, str(p.name, 120) || email.split('@')[0], new Date().toISOString());   // adresse vérifiée par Google
         row = await db.get('SELECT * FROM users WHERE id = ?', uid);
         mailer.trySend({ to: email, ...templates.welcome(row, cfg.appUrl) });
       }
       await db.run('INSERT INTO oauth_identities (provider, subject, user_id) VALUES (?,?,?)', 'google', String(p.sub), row.id);
+      await db.run('UPDATE users SET email_verified = 1 WHERE id = ?', row.id);   // Google a vérifié cette adresse
     }
     return { token: issueToken(cfg, row), next: st.next || '', isNew: !ident };
   }
@@ -170,7 +201,7 @@ function createAccounts({ cfg, db, mailer, log }) {
     return await listMethods(userId);
   }
 
-  return { signup, login, me, updateProfile, changePassword, requestReset, confirmReset, oauthStart, oauthCallback, listMethods, addMethod, setDefaultMethod, removeMethod };
+  return { signup, verifyEmail, resendVerification, requireVerified, login, me, updateProfile, changePassword, requestReset, confirmReset, oauthStart, oauthCallback, listMethods, addMethod, setDefaultMethod, removeMethod };
 }
 
 module.exports = { createAccounts, publicUser };
