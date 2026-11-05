@@ -56,7 +56,7 @@ function loadConfig(env = process.env) {
       authUrl: env.GOOGLE_AUTH_URL || 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: env.GOOGLE_TOKEN_URL || 'https://oauth2.googleapis.com/token', userInfoUrl: env.GOOGLE_USERINFO_URL || 'https://openidconnect.googleapis.com/v1/userinfo' },
     mailer: { provider: env.MAILER || 'console', brevoKey: env.BREVO_API_KEY || '', brevoUrl: env.BREVO_URL || 'https://api.brevo.com/v3/smtp/email', senderEmail: env.MAIL_FROM || 'no-reply@fredaworkspace.com', senderName: env.MAIL_FROM_NAME || 'Freda Workspace' },
     payments: {
-      provider: env.PAYMENTS_PROVIDER || 'demo',                   // demo | paym
+      provider: env.PAYMENTS_PROVIDER || 'demo',                   // demo | paym | issuing (Freda Pay Issuing : MonCash / NatCash)
       stripe: {
         paymentMethodConfig: env.STRIPE_PAYMENT_METHOD_CONFIG || '',
         apiVersion: env.STRIPE_API_VERSION || '2026-09-30.endive',                 // version d'API figée (alignée sur Stripe.js « endive » ci-dessous)
@@ -64,6 +64,7 @@ function loadConfig(env = process.env) {
         jsUrl: env.STRIPE_JS_URL || 'https://js.stripe.com/endive/stripe.js',
         uiMode: env.STRIPE_UI_MODE === 'hosted' || !env.STRIPE_PUBLISHABLE_KEY ? 'hosted' : 'embedded',
         secretKey: env.STRIPE_SECRET_KEY || '', webhookSecret: env.STRIPE_WEBHOOK_SECRET || '', baseUrl: env.STRIPE_BASE_URL || 'https://api.stripe.com' },
+      issuing: { secretKey: env.FREDA_ISSUING_SECRET_KEY || '', webhookSecret: env.FREDA_ISSUING_WEBHOOK_SECRET || '', baseUrl: env.FREDA_ISSUING_BASE_URL || 'https://api.fredapay.com' },
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
     dataKey: env.DATA_KEY || '',
@@ -91,7 +92,7 @@ function integrationSummary(cfg) {
     nodeEnv: cfg.nodeEnv, database: cfg.databaseUrl ? 'postgresql' : 'pglite',
     jwtSecret: !!cfg.auth.jwtSecret, dataKey: !!cfg.dataKey, adminToken: !!cfg.adminToken,
     namesilo: !!cfg.namesilo.key, namesiloMode: cfg.namesilo.mode, nameservers: cfg.namesilo.nameservers.length,
-    paym: !!(cfg.payments.paym.clientId && cfg.payments.paym.clientSecret), paymentsProvider: cfg.payments.provider,
+    paym: !!(cfg.payments.paym.clientId && cfg.payments.paym.clientSecret), issuingKey: !!cfg.payments.issuing.secretKey, issuingMode: /^sk_live_/.test(cfg.payments.issuing.secretKey) ? 'live' : cfg.payments.issuing.secretKey ? 'test' : null, issuingWebhook: !!cfg.payments.issuing.webhookSecret, paymentsProvider: cfg.payments.provider,
     stripeSecretKey: !!s.secretKey, stripeWebhookSecret: !!s.webhookSecret, stripePublishableKey: !!s.publishableKey, stripeUiMode: s.secretKey ? s.uiMode : null,
     brevo: !!cfg.mailer.brevoKey, mailer: cfg.mailer.provider, purelymail: !!cfg.purelymail.apiKey,
     google: !!(cfg.google.clientId && cfg.google.clientSecret), alertWebhook: !!cfg.alerts.webhookUrl,
@@ -109,6 +110,11 @@ function assertSafe(cfg) {
   if (cfg.auth.mode === 'demo' && cfg.nodeEnv === 'production') errors.push('AUTH_MODE=demo interdit avec NODE_ENV=production.');
   if (cfg.auth.mode === 'jwt' && cfg.auth.jwtSecret.length < 32) errors.push('JWT_SECRET (32 caractères minimum) requis avec AUTH_MODE=jwt.');
   if (cfg.payments.provider === 'paym' && (!cfg.payments.paym.clientId || !cfg.payments.paym.clientSecret)) errors.push('PAYM_CLIENT_ID et PAYM_CLIENT_SECRET requis avec PAYMENTS_PROVIDER=paym.');
+  const iss = cfg.payments.issuing;
+  if (cfg.payments.provider === 'issuing' && !iss.secretKey) errors.push('FREDA_ISSUING_SECRET_KEY (sk_test_… ou sk_live_…) requise avec PAYMENTS_PROVIDER=issuing.');
+  if (iss.secretKey && !/^sk_(test|live)_/.test(iss.secretKey)) errors.push('FREDA_ISSUING_SECRET_KEY invalide (attendu sk_test_… ou sk_live_…).');
+  if (iss.webhookSecret && !/^whsec_/.test(iss.webhookSecret)) errors.push('FREDA_ISSUING_WEBHOOK_SECRET invalide (attendu whsec_…).');
+  if (cfg.payments.provider === 'issuing' && /^sk_test_/.test(iss.secretKey) && cfg.namesilo.mode === 'live') errors.push('Clé Freda Pay Issuing de TEST avec NAMESILO_MODE=live : des domaines réels seraient achetés avec de faux paiements.');
   if (cfg.payments.stripe.secretKey && !/^(sk|rk)_(test|live)_/.test(cfg.payments.stripe.secretKey)) errors.push('STRIPE_SECRET_KEY invalide (attendu sk_test_… ou sk_live_…).');
   const pk = cfg.payments.stripe.publishableKey, sk = cfg.payments.stripe.secretKey;
   if (pk && !/^pk_(test|live)_/.test(pk)) errors.push('STRIPE_PUBLISHABLE_KEY invalide (attendu pk_test_… ou pk_live_…). Ne mettez JAMAIS la clé secrète ici : elle est envoyée au navigateur.');
