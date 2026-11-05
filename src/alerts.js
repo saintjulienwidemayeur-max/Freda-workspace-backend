@@ -8,7 +8,7 @@ function createAlerts(cfg, log) {
     if (recent.has(key) && Date.now() - recent.get(key) < 10 * 60 * 1000) return;   // anti-spam : 10 min
     recent.set(key, Date.now());
     try {
-      await fetch(cfg.alerts.webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: `[Freda ${level}] ${message} ${JSON.stringify(data)}`, content: `[Freda ${level}] ${message}` }), signal: AbortSignal.timeout(8000) });
+      await fetch(cfg.alerts.webhookUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: `[Freda Workspace ${level}] ${message} ${JSON.stringify(data)}`, content: `[Freda Workspace ${level}] ${message}` }), signal: AbortSignal.timeout(8000) });
     } catch (e) { log('warn', 'alert_delivery_failed'); }
   };
 }

@@ -47,7 +47,7 @@ function issueToken(cfg, user) {
 }
 
 /**
- * Jeton de session d'une BOÎTE (application mobile) : ne donne accès qu'aux routes /api/mail/* de cette boîte, jamais au compte Freda
+ * Jeton de session d'une BOÎTE (application mobile) : ne donne accès qu'aux routes /api/mail/* de cette boîte, jamais au compte Freda Workspace
  * (son « sub » n'est pas un utilisateur : le jeton de compte et celui de boîte ne sont pas interchangeables). Invalidé par tokens_valid_after.
  */
 function issueMailboxToken(cfg, mailbox) {

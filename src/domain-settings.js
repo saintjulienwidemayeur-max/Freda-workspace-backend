@@ -27,7 +27,7 @@ function createDomainSettings({ db, registrar, mailer, alert, log, cfg }) {
     return view(await db.get('SELECT * FROM domains WHERE id = ?', d.id));
   }
 
-  /** NameSilo envoie le code EPP au contact administratif du compte revendeur, pas au client : le support Freda le transmet. */
+  /** NameSilo envoie le code EPP au contact administratif du compte revendeur, pas au client : le support Freda Workspace le transmet. */
   async function requestTransferCode(userId, name) {
     const d = await own(userId, name);
     if (d.external) throw new HttpError(400, 'Ce domaine n’est pas enregistré chez Freda.', 'external_domain');

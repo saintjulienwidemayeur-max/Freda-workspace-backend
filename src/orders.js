@@ -48,7 +48,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const keys = Object.keys(patch);
     await db.run(`UPDATE orders SET ${keys.map((k) => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => (k === 'payload' ? JSON.stringify(patch[k]) : patch[k])), new Date().toISOString(), id);
   };
-  const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash', balance: 'Solde Freda' }[m] || m);
+  const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash', balance: 'Solde Freda Workspace' }[m] || m);
 
   function planAmount(planId, cycle) {
     const p = cfg.plans[planId];
@@ -273,7 +273,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
         try { await registrar.lock(l.name); } catch (e) { log('warn', 'lock_failed', { domain: l.name }); }
         const exp = new Date(); exp.setFullYear(exp.getFullYear() + years);
         const first = !(await db.get('SELECT 1 FROM domains WHERE user_id = ?', o.user_id));
-        // auto_renew = rappels et facture de renouvellement envoyés automatiquement par Freda ; NameSilo reste en auto_renew=0
+        // auto_renew = rappels et facture de renouvellement envoyés automatiquement par Freda Workspace ; NameSilo reste en auto_renew=0
         await db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, expires_at, auto_renew, locked, is_primary, dry_run, registrar_cost, order_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
           'dom_' + crypto.randomBytes(8).toString('hex'), o.user_id, l.name, 'active', 0, 'registrar', today(), exp.toISOString().slice(0, 10), 1, 1, first ? 1 : 0, o.dry_run, reg.orderAmount, o.id, new Date().toISOString());
         await activity(o.user_id, 'globe', `Domaine ${l.name} enregistré`);

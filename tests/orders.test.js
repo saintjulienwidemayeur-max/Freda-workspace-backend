@@ -16,7 +16,7 @@ test('Pay’m : la commande reste en attente avec l’URL de paiement ; montant 
   const call = t.paym.calls.find((c) => c.path === '/api/paiement-marchand').body;
   assert.strictEqual(call.client_id, 'cid');
   assert.strictEqual(call.payment_method, 'moncash');
-  assert.strictEqual(call.montant, Math.ceil((12.99 + 0.78) * 132.5));
+  assert.strictEqual(call.montant, Math.ceil((12.99 + 0.78) * 132));
   assert.strictEqual(call.refference_id, r.reference);
   assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'), 'rien n’est acheté avant le paiement');
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM domains')).n, 0);

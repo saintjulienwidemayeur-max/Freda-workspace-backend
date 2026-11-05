@@ -1,6 +1,6 @@
 /**
  * Frais de traitement des paiements, ajoutés au montant de la commande (jamais au crédit du solde ni au prix de l'offre).
- *  - Carte bancaire : 3,5 % + 0,40 $ ;  MonCash / NatCash : 6 %.  Le paiement par solde Freda n'a aucun frais.
+ *  - Carte bancaire : 3,5 % + 0,40 $ ;  MonCash / NatCash : 6 %.  Le paiement par solde Freda Workspace n'a aucun frais.
  * Montants en dollars US, arrondis au cent. Calculés côté serveur uniquement.
  */
 const CARD = { rate: 0.035, fixed: 0.40 };
