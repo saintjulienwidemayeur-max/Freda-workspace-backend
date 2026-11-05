@@ -24,6 +24,7 @@ const { createOrders } = require('./src/orders');
 const { createJobs } = require('./src/jobs');
 const { createWorkspace } = require('./src/workspace');
 const { createDomainSettings } = require('./src/domain-settings');
+const { createOverview } = require('./src/admin-overview');
 
 const MAX_BODY = 32 * 1024;
 
@@ -62,7 +63,9 @@ function createApp(deps) {
   const settings = createDomainSettings({ db, registrar, mailer, alert, log: logger, cfg });
   const authenticate = createAuthenticator(cfg, db);
   const authenticateMailbox = createMailboxAuthenticator(cfg, db);
-  const push = createPush({ cfg, db, log: logger, vault, mail, senders: deps.pushSenders || createSenders(cfg), debounceMs: deps.pushDebounceMs });
+  const pushSenders = deps.pushSenders || createSenders(cfg);
+  const push = createPush({ cfg, db, log: logger, vault, mail, senders: pushSenders, debounceMs: deps.pushDebounceMs });
+  const overview = createOverview({ cfg, db, payments, mail, senders: pushSenders });
 
   const photos = createPhotos({ db });
 
@@ -192,6 +195,7 @@ function createApp(deps) {
   const admin = { admin: true };
   route('POST', '/api/admin/jobs/run', async () => jobs.run(), admin);
   route('GET', '/api/admin/brand-dns', async () => dns.brandStatus(), admin);   // marque blanche DNS : vos relais existent-ils ? (vue détaillée)
+  route('GET', '/api/admin/overview', async (c) => overview.overview(c.url.searchParams.get('days')), admin);   // tableau de bord administrateur
   route('GET', '/api/admin/domain-prices', async () => catalog.priceTable(), admin);
   route('GET', '/api/admin/orders', async (c) => ({ orders: await db.all('SELECT id, reference, user_id, kind, status, amount, error, created_at FROM orders WHERE status = ? ORDER BY created_at DESC LIMIT 100', c.url.searchParams.get('status') || 'needs_attention') }), admin);
 
