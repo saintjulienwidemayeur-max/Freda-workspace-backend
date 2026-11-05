@@ -191,3 +191,16 @@ test('régression : les rappels du cycle suivant ne sont plus étouffés (notice
   await t.db.run('UPDATE subscriptions SET renews_at = ?', days(4)); await run(t);
   assert.ok(t.mailer.sent.some((m) => /se renouvelle dans/.test(m.subject)), 'rappel du 2e cycle envoyé');
 });
+
+test('e-mails : habillage de marque (logo, bouton, pied de page légal) généré à partir du texte', () => {
+  const { createMailer, templates } = require('../src/mailer');
+  const m = createMailer({ mailer: { provider: 'console' } }, () => {});
+  return m.send({ to: 'a@b.c', ...templates.reset({ name: 'Jean' }, 'https://fredaworkspace.com/connexion.html?reset=tok') }).then(() => {
+    const h = m.sent[0].html;
+    assert.match(h, /assets\/email\/logo-reverse\.png/);
+    assert.match(h, /Choisir un nouveau mot de passe/);
+    assert.match(h, /Freda Pay LLC\. Tous droits réservés/);
+    assert.ok(!/<script/i.test(h));
+    assert.ok(/reset=tok/.test(m.sent[0].text), 'la version texte reste complète');
+  });
+});

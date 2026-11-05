@@ -1,8 +1,68 @@
+
+/* ---------- Habillage de marque : tout e-mail sans HTML est mis en forme (logo, couleurs, bouton, pied de page légal) à partir de son texte ---------- */
+const SITE = 'https://fredaworkspace.com';
+const C = { midnight: '#061137', navy: '#071653', blue: '#2B64E4', mist: '#EEF3FD', slate: '#5B6478', amber: '#F5B83D', line: '#DCE5F7' };
+const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+const URL_RE = /https?:\/\/[^\s)]+/g;
+const linkify = (t) => esc(t).replace(/https?:\/\/[^\s)&]+(?:&amp;[^\s)&]+)*/g, (u) => `<a href="${u}" style="color:${C.blue};text-decoration:underline;overflow-wrap:anywhere">${u}</a>`);
+const CTA = [[/reset=/, 'Choisir un nouveau mot de passe'], [/topup/, 'Recharger mon solde'], [/renew=/, 'Renouveler mon domaine'], [/dns\.html/, 'Gérer mon DNS'], [/entreprise\.html/, 'Configurer mon entreprise'], [/facturation\.html/, 'Ouvrir ma facturation'], [/connexion\.html/, 'Me connecter'], [/domaines\.html/, 'Mes domaines']];
+const ctaLabel = (u) => (CTA.find(([re]) => re.test(u)) || [0, 'Ouvrir mon espace'])[1];
+const isSecret = (l) => /^[^\s@]+@\S+ : \S+/.test(l) || /^Mot de passe initial : \S+/.test(l);
+
+function brandedHtml({ subject, text }) {
+  const paras = String(text).split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const signature = /^(Merci,|L['’]équipe Freda Workspace|Freda Workspace)$/;   // la signature est ajoutée par l'habillage
+  while (paras.length > 1) {
+    const lines = paras[paras.length - 1].split('\n');
+    while (lines.length && signature.test(lines[lines.length - 1].trim())) lines.pop();
+    if (lines.length) { paras[paras.length - 1] = lines.join('\n'); break; }
+    paras.pop();
+  }
+  let button = null;
+  const body = paras.map((para, i) => {
+    const lines = para.split('\n'), out = [];
+    for (const line of lines) {
+      const m = !button && !isSecret(line) && /^(.*?)\s*:?\s*(https?:\/\/\S+)$/.exec(line);
+      if (m && !/\([^)]*$/.test(m[1])) { button = { url: m[2], label: ctaLabel(m[2]) }; if (m[1].trim()) out.push(esc(m[1].trim())); out.push('\u0000BUTTON\u0000'); }
+      else if (isSecret(line)) out.push(`<span style="display:block;margin:6px 0;padding:10px 12px;background:${C.mist};border:1px solid ${C.line};border-radius:8px;font-family:Consolas,Menlo,monospace;font-size:14px;color:${C.midnight};word-break:break-all">${esc(line)}</span>`);
+      else out.push(linkify(line));
+    }
+    const html = out.join('<br>').replace(/<br>(<span style="display:block)/g, '$1');
+    const style = i === 0 ? `margin:0 0 16px;font-size:16px;font-weight:700;color:${C.midnight}` : `margin:0 0 16px;font-size:15px;line-height:1.65;color:#2B3245`;
+    const mark = '\u0000BUTTON\u0000';
+    if (html.includes(mark)) {
+      const [a, b] = html.split(mark), a2 = a.replace(/<br>$/, ''), b2 = b.replace(/^<br>/, '');
+      return (a2 ? `<p style="${style}">${a2}</p>` : '') + mark + (b2 ? `<p style="${style}">${b2}</p>` : '');
+    }
+    return `<p style="${style}">${html}</p>`;
+  }).join('');
+  const btnHtml = button ? `<table role="presentation" cellspacing="0" cellpadding="0" border="0" style="margin:8px 0 20px"><tr><td style="border-radius:10px;background:${C.blue}"><a href="${esc(button.url)}" style="display:inline-block;padding:14px 28px;font-family:Manrope,Inter,Arial,sans-serif;font-size:15px;font-weight:700;color:#FFFFFF;text-decoration:none;border-radius:10px">${esc(button.label)}</a></td></tr></table><p style="margin:0 0 20px;font-size:12px;line-height:1.5;color:${C.slate}">Si le bouton ne fonctionne pas, copiez ce lien dans votre navigateur :<br><a href="${esc(button.url)}" style="color:${C.blue};word-break:break-all">${esc(button.url)}</a></p>` : '';
+  const content = body.replace('\u0000BUTTON\u0000', btnHtml);
+  const first = (paras[1] || paras[0] || '').replace(URL_RE, '').replace(/\s+/g, ' ').trim().slice(0, 110);
+  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>${esc(subject)}</title></head>
+<body style="margin:0;padding:0;background:${C.mist};-webkit-text-size-adjust:100%">
+<div style="display:none;max-height:0;overflow:hidden;opacity:0;color:${C.mist}">${esc(first)}</div>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:${C.mist}"><tr><td align="center" style="padding:24px 12px">
+<table role="presentation" width="600" cellspacing="0" cellpadding="0" border="0" style="width:100%;max-width:600px;font-family:Inter,Arial,Helvetica,sans-serif">
+<tr><td style="background:${C.navy};border-radius:16px 16px 0 0;padding:26px 32px"><a href="${SITE}" style="text-decoration:none"><img src="${SITE}/assets/email/logo-reverse.png" width="190" alt="Freda Workspace" style="display:block;border:0;height:auto;max-width:190px"></a></td></tr>
+<tr><td style="height:4px;background:${C.amber};line-height:4px;font-size:0">&nbsp;</td></tr>
+<tr><td style="background:#FFFFFF;padding:32px 32px 12px;border-left:1px solid ${C.line};border-right:1px solid ${C.line}">
+<h1 style="margin:0 0 22px;font-family:Manrope,Inter,Arial,sans-serif;font-size:22px;line-height:1.3;font-weight:800;color:${C.midnight}">${esc(subject)}</h1>
+${content}
+<p style="margin:8px 0 22px;font-size:15px;color:#2B3245">L’équipe Freda Workspace</p>
+</td></tr>
+<tr><td style="background:#FFFFFF;border:1px solid ${C.line};border-top:0;border-radius:0 0 16px 16px;padding:0 32px 26px"><div style="border-top:1px solid ${C.line};padding-top:18px;font-size:13px;line-height:1.6;color:${C.slate}">Une question ? Écrivez-nous à <a href="mailto:support@fredaworkspace.com" style="color:${C.blue}">support@fredaworkspace.com</a>, du lundi au samedi, de 8 h à 18 h (heure d’Haïti), en français, en créole haïtien ou en anglais.</div></td></tr>
+<tr><td style="padding:18px 8px 0;text-align:center;font-size:12px;line-height:1.7;color:${C.slate}">
+<a href="${SITE}" style="color:${C.slate}">fredaworkspace.com</a> &nbsp;·&nbsp; <a href="${SITE}/legal.html#cgu" style="color:${C.slate}">Conditions</a> &nbsp;·&nbsp; <a href="${SITE}/legal.html#confidentialite" style="color:${C.slate}">Confidentialité</a><br>
+© ${new Date().getFullYear()} Freda Pay LLC. Tous droits réservés. Freda Workspace est une marque de Freda Pay LLC.<br>30 N Gould St Ste R, Sheridan, WY 82801, USA</td></tr>
+</table></td></tr></table></body></html>`;
+}
+
 /** E-mails transactionnels : « console » (développement/tests, garde les messages en mémoire) ou « brevo » (API HTTP v3, comme Freda Pay). */
 function createMailer(cfg, log) {
   const sent = [];
   async function send({ to, subject, text, html }) {
-    const msg = { to, subject, text, html: html || `<p>${String(text).replace(/\n/g, '<br>')}</p>` };
+    const msg = { to, subject, text, html: html || brandedHtml({ subject, text }) };
     if (cfg.mailer.provider === 'brevo') {
       const res = await fetch(cfg.mailer.brevoUrl, {
         method: 'POST',
