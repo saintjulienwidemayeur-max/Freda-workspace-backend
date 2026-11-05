@@ -41,7 +41,7 @@ function createOverview({ cfg, db, payments, mail, senders, startedAt = Date.now
     const activeSubs = subs.filter((r) => r.status === 'active');
     const withinDays = expiring.filter((d) => d.expires_at <= in7).length;
     const system = {
-      database: cfg.databaseUrl ? 'postgresql' : 'pglite', nodeEnv: cfg.nodeEnv, registrar: cfg.namesilo.mode, payments: payments.name, cards: !!payments.cards,
+      database: cfg.databaseUrl ? 'postgresql' : 'pglite', nodeEnv: cfg.nodeEnv, registrar: cfg.namesilo.mode, payments: payments.name, paymentsMode: payments.name === 'issuing' ? (/^sk_live_/.test(cfg.payments.issuing.secretKey) ? 'live' : 'test') : null, issuingWebhook: payments.name === 'issuing' ? !!cfg.payments.issuing.webhookSecret : null, cards: !!payments.cards,
       mailer: cfg.mailer.provider, mailProvider: !!mail.providerEnabled, push: { ios: !!(senders && senders.ios), android: !!(senders && senders.android) },
       keepAlive: !!cfg.keepAlive.url, uptimeSeconds: Math.round((now - startedAt) / 1000), startedAt: iso(startedAt), memoryMb: Math.round(process.memoryUsage().rss / 1048576),
     };
@@ -51,6 +51,8 @@ function createOverview({ cfg, db, payments, mail, senders, startedAt = Date.now
     if (system.registrar !== 'live') add('warn', 'registrar_dry_run', `NameSilo en mode « ${system.registrar} » : les domaines ne sont pas réellement achetés.`);
     if (system.payments === 'demo') add('warn', 'payments_demo', 'Paiements en mode démonstration : aucun vrai paiement n’est encaissé.');
     if (system.mailer === 'console') add('warn', 'mailer_console', 'Aucun fournisseur d’e-mails transactionnels (Brevo) : les e-mails du site (réinitialisation, reçus) ne partent pas.');
+    if (system.payments === 'issuing' && system.paymentsMode === 'test') add('warn', 'issuing_sandbox', 'Freda Pay Issuing en mode Sandbox (clé sk_test_…) : MonCash et NatCash n’encaissent pas de vrai argent.');
+    if (system.payments === 'issuing' && !system.issuingWebhook) add('info', 'issuing_no_webhook', 'Webhook Freda Pay Issuing non configuré : les paiements sont confirmés par vérification périodique (quelques minutes de retard possibles).');
     if (!system.mailProvider) add('error', 'mail_provider_off', 'Purelymail n’est pas configuré : les boîtes ne peuvent pas être créées.');
     if (!system.push.android && !system.push.ios) add('warn', 'push_off', 'Notifications push désactivées (ni FCM ni APNs).');
     if (!system.keepAlive) add('info', 'keepalive_off', 'Auto-ping désactivé : le serveur gratuit Render s’endort après 15 minutes sans visite.');

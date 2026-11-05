@@ -136,6 +136,20 @@ function createApp(deps) {
     }
     return { received: true };
   });
+  /* ----- Freda Pay Issuing : webhook signé (HMAC-SHA256 du corps BRUT, en-tête X-Freda-Signature: sha256=…) ----- */
+  route('POST', '/api/webhooks/issuing', async (c) => {
+    const secret = cfg.payments.issuing.webhookSecret;
+    if (cfg.payments.provider !== 'issuing' || !secret) throw new HttpError(404, 'Route introuvable.', 'not_found');
+    const raw = await c.raw(256 * 1024);
+    const expected = crypto.createHmac('sha256', secret).update(raw).digest('hex');
+    const got = String(c.req.headers['x-freda-signature'] || '').replace(/^sha256=/, '');
+    if (!tokenEq(got, expected)) throw new HttpError(400, 'Signature invalide.', 'bad_signature');
+    let event; try { event = JSON.parse(raw.toString('utf8')); } catch (e) { throw new HttpError(400, 'JSON invalide.'); }
+    const ref = event.data && event.data.reference;
+    if (event.event === 'payment.succeeded' && ref) await orders.confirmByReference(ref);   // revérifie chez Freda Pay Issuing (GET /v1/payments/:id) ; une erreur -> 500 -> nouvelle tentative
+    else if (event.event === 'payment.failed' && ref) await orders.failByReference(ref, 'Le paiement n’a pas abouti. Aucun montant n’a été débité : réessayez.');
+    return { received: true };
+  });
   route('GET', '/api/invoices', async (c) => ({ invoices: (await workspace(c.user.id)).invoices }), auth);
 
   /* ----- achats ----- */
