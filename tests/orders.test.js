@@ -60,15 +60,18 @@ test('Pay’m : commande expirée après 2 h sans paiement ; montant payé insuf
   assert.ok(!t.ns.calls.some((c) => c.op === 'registerDomain'));
 });
 
-test('Pay’m : échec d’enregistrement après paiement -> remboursement manuel signalé (needs_attention) + alerte', async () => {
+test('Pay’m : échec d’enregistrement après paiement -> remboursement automatique sur le SOLDE du client (aucun remboursement manuel)', async () => {
   const alerts = [];
   const t = await setup({ env: { PAYMENTS_PROVIDER: 'paym' }, deps: { alert: async (...a) => alerts.push(a) } });
   t.state.failRegister.push('neuf.com');
   const r = await (await checkout(t, payBody({ domains: ['neuf.com'] }))).json();
   t.state.paid.add(r.reference);
   await t.app.app.orders.sweep();
-  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'needs_attention');
-  assert.ok(alerts.some(([, m]) => /MANUELLEMENT/.test(m)));
+  assert.strictEqual((await t.db.get('SELECT status FROM orders')).status, 'refunded');
+  assert.ok(!alerts.some(([, m]) => /MANUELLEMENT/.test(m)), 'plus de remboursement manuel');
+  const e = await t.db.all("SELECT amount, kind FROM balance_entries");
+  assert.deepStrictEqual(e.map((x) => x.kind), ['refund']);
+  assert.strictEqual(e[0].amount, 12.99, 'le client retrouve exactement le prix payé sur son solde');
   assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM invoices')).n, 0, 'pas de facture pour un achat non livré');
 });
 

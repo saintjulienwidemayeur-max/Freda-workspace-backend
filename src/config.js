@@ -67,6 +67,7 @@ function loadConfig(env = process.env) {
       issuing: { secretKey: env.FREDA_ISSUING_SECRET_KEY || '', webhookSecret: env.FREDA_ISSUING_WEBHOOK_SECRET || '', baseUrl: env.FREDA_ISSUING_BASE_URL || 'https://api.fredapay.com' },
       paym: { clientId: env.PAYM_CLIENT_ID || '', clientSecret: env.PAYM_CLIENT_SECRET || '', baseUrl: env.PAYM_BASE_URL || 'https://plopplop.solutionip.app' },
     },
+    balance: { min: Number(env.BALANCE_MIN_TOPUP) || 5, max: Number(env.BALANCE_MAX_TOPUP) || 500 },   // recharge du solde, en USD
     dataKey: env.DATA_KEY || '',
     push: {
       preview: env.PUSH_PREVIEW !== 'false',                       // défaut : expéditeur, objet et début du message dans la notification (transitent par Apple/Google) ; PUSH_PREVIEW=false : « Nouveau message » seulement

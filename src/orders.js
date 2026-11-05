@@ -17,8 +17,11 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
 const OPEN = ['awaiting_payment', 'fulfilling'];
 const EXPIRE_MS = 2 * 3600 * 1000;
 
-function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log }) {
+function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log, balance }) {
   const parse = (o) => ({ ...o, payload: JSON.parse(o.payload || '{}') });
+  const hooks = { afterTopup: null };   // branché par le serveur : après une recharge, payer tout de suite ce qui est dû avec le solde
+  // MonCash / NatCash ne permettent aucun remboursement automatique : le remboursement est crédité sur le solde du client (instantané), sauf en mode démo
+  const creditsBalance = (o) => o.payment_method === 'balance' || (['paym', 'issuing'].includes(payments.name) && o.payment_method !== 'card');
 
   function summarize(o, extra = {}) {
     const p = o.payload || JSON.parse(o.payload || '{}');
@@ -44,7 +47,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const keys = Object.keys(patch);
     await db.run(`UPDATE orders SET ${keys.map((k) => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => (k === 'payload' ? JSON.stringify(patch[k]) : patch[k])), new Date().toISOString(), id);
   };
-  const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash' }[m] || m);
+  const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash', balance: 'Solde Freda' }[m] || m);
 
   function planAmount(planId, cycle) {
     const p = cfg.plans[planId];
@@ -56,7 +59,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   /* ---------- Création ---------- */
   async function create({ user, body, idempotencyKey, system = false }) {
     const kind = body.kind;
-    if (!['domain', 'subscription', 'renewal'].includes(kind)) throw new HttpError(400, 'Type d’achat non pris en charge.', 'unsupported_kind');
+    if (!['domain', 'subscription', 'renewal', 'topup'].includes(kind)) throw new HttpError(400, 'Type d’achat non pris en charge.', 'unsupported_kind');
     if (idempotencyKey) {
       const prev = await db.get('SELECT order_id FROM idempotency WHERE user_id = ? AND key = ?', user.id, idempotencyKey);
       if (prev) return summarize(parse(await db.get('SELECT * FROM orders WHERE id = ?', prev.order_id)));
@@ -80,6 +83,11 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       // le mot de passe choisi est validé AVANT tout paiement, puis conservé CHIFFRÉ le temps de la commande (jamais en clair, supprimé après exécution)
       const mbPw = m.local && m.password ? mail.validatePassword(m.password, String(m.local).toLowerCase()) : null;
       payload = { plan: body.plan, cycle: body.cycle, domain, mailbox: m.local ? { local: String(m.local).toLowerCase(), name: String(m.name || m.local), ...(mbPw ? { passwordEnc: vault.encrypt(mbPw) } : {}) } : null, renewal: !!body.renewal };
+    } else if (kind === 'topup') {
+      amount = r2(Number(body.amount));
+      if (!(amount >= cfg.balance.min && amount <= cfg.balance.max)) throw new HttpError(400, `Montant de recharge invalide : entre ${cfg.balance.min} $ et ${cfg.balance.max} $.`, 'invalid_amount');
+      if (body.method === 'balance') throw new HttpError(400, 'Le solde ne se recharge pas avec le solde.', 'invalid_method');
+      payload = { topup: true };
     } else {
       const years = Number(body.years || 1);
       if (!Number.isInteger(years) || years < 1 || years > cfg.maxYears) throw new HttpError(400, 'Durée invalide.', 'invalid_years');
@@ -106,8 +114,17 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     });
 
     let charge;
-    const label = { domain: 'Freda Workspace — nom de domaine', subscription: 'Freda Workspace — offre Freda Mail', renewal: 'Freda Workspace — renouvellement de domaine' }[kind];
-    try { charge = await payments.create({ amount, currency: 'USD', method, reference, userId: user.id, orderId: oid, methodId: methodRow ? methodRow.id : null, system, label }); }
+    const label = { domain: 'Freda Workspace — nom de domaine', subscription: 'Freda Workspace — offre Freda Mail', renewal: 'Freda Workspace — renouvellement de domaine', topup: 'Freda Workspace — recharge du solde' }[kind];
+    if (method === 'balance') {
+      // paiement avec le solde : débit atomique, uniquement s'il suffit ; aucun fournisseur de paiement n'intervient
+      const ok = await balance.debit(user.id, amount, { orderId: oid, note: label.replace('Freda Workspace — ', '') });
+      if (!ok) {
+        const have = await balance.get(user.id);
+        await setOrder(oid, { status: 'payment_failed', error: 'Solde insuffisant.' });
+        throw new HttpError(402, `Solde insuffisant : il vous faut ${amount.toFixed(2)} $ et votre solde est de ${have.toFixed(2)} $. Rechargez avec MonCash ou NatCash.`, 'insufficient_balance', { needed: amount, balance: have, missing: r2(amount - have) });
+      }
+      charge = { status: 'paid', providerRef: 'balance' };
+    } else try { charge = await payments.create({ amount, currency: 'USD', method, reference, userId: user.id, orderId: oid, methodId: methodRow ? methodRow.id : null, system, label }); }
     catch (e) {
       await setOrder(oid, { status: 'payment_failed', error: e.message });
       if (e instanceof HttpError) throw e;
@@ -197,6 +214,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     let extra = {};
     try {
       if (o.kind === 'domain') await fulfillDomain(o, user);
+      else if (o.kind === 'topup') await fulfillTopup(o, user);
       else if (o.kind === 'subscription') { const r = await fulfillSubscription(o, user); if (r.initialPassword) extra = { initialPassword: r.initialPassword }; }   // montré une seule fois, uniquement dans la réponse synchrone
       else await fulfillRenewal(o, user);
     } catch (e) {
@@ -208,12 +226,35 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   }
 
   async function refund(o, amount, reason) {
+    if (creditsBalance(o)) {
+      const ok = await balance.credit(o.user_id, amount, { kind: 'refund', orderId: o.id, note: `Remboursement (${reason})` });
+      if (ok || (await db.get("SELECT 1 FROM balance_entries WHERE order_id = ? AND kind = 'refund'", o.id))) return true;   // déjà crédité (rejeu) = remboursé
+    }
     try { await payments.refund({ reference: o.reference, amount, order: o, reason }); return true; }
     catch (e) {
       if (!(e instanceof RefundNotSupported)) log('error', 'refund_failed', { reference: o.reference });
       await alert('error', 'Remboursement à effectuer MANUELLEMENT', { reference: o.reference, amount, reason, method: o.payment_method });
       return false;
     }
+  }
+
+  /** Reçu par e-mail : pour un achat payé avec le solde, il indique aussi le solde restant. */
+  async function sendReceipt(user, o, amount = o.amount) {
+    if (o.payment_method === 'balance') {
+      const label = { domain: 'Votre domaine', subscription: 'Votre offre Freda Mail', renewal: 'Le renouvellement de votre domaine' }[o.kind] || 'Votre achat';
+      return mailer.trySend({ to: user.email, ...templates.paidFromBalance(user, { label, amount, balance: await balance.get(o.user_id), link: `${cfg.appUrl}/espace/facturation.html` }) });
+    }
+    return mailer.trySend({ to: user.email, ...templates.receipt(user, { ...o, amount }, cfg.appUrl) });
+  }
+
+  async function fulfillTopup(o, user) {
+    const added = await balance.credit(o.user_id, o.amount, { kind: 'topup', orderId: o.id, note: `Recharge ${methodLabel(o.payment_method)}` });
+    if (added) await addInvoice(o.user_id, { label: 'Recharge du solde', amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
+    const now = await balance.get(o.user_id);
+    await activity(o.user_id, 'wallet', `Solde rechargé de ${o.amount.toFixed(2)} $ (nouveau solde : ${now.toFixed(2)} $)`);
+    await setOrder(o.id, { status: 'completed' });
+    if (added) await mailer.trySend({ to: user.email, ...templates.topupReceipt(user, { amount: o.amount, reference: o.reference, balance: now, link: `${cfg.appUrl}/espace/facturation.html` }) });
+    if (added && hooks.afterTopup) { try { await hooks.afterTopup(o.user_id); } catch (e) { log('warn', 'after_topup_failed', { message: e.message }); } }   // une offre échue est payée aussitôt
   }
 
   async function fulfillDomain(o, user) {
@@ -250,7 +291,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     if (done.length && status !== 'needs_attention') await addInvoice(o.user_id, { label: `${done.length > 1 ? 'Domaines ' : 'Domaine '}${done.map((l) => l.name).join(', ')} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: paid, method: methodLabel(o.payment_method), orderId: o.id });
     await setOrder(o.id, { status, payload: { ...o.payload, done: done.map((l) => l.name), failed: failed.map((f) => ({ name: f.name, reason: f.reason })) }, error: status === 'refunded' ? 'Enregistrement impossible.' : '' });
     if (done.length) {
-      mailer.trySend({ to: user.email, ...templates.receipt(user, { ...o, amount: paid }, cfg.appUrl) });
+      sendReceipt(user, o, paid);
       mailer.trySend({ to: user.email, ...templates.domainRegistered(user, done.map((l) => l.name), cfg.appUrl) });
     }
   }
@@ -292,7 +333,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     }
     const clean = { ...p, mailbox: p.mailbox ? { local: p.mailbox.local, name: p.mailbox.name } : null };   // le mot de passe chiffré est supprimé dès que la boîte existe
     await setOrder(o.id, { status: 'completed', payload: { ...clean, mailboxCreated: mailboxReady } });
-    mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
+    await sendReceipt(user, o);
     if (mailboxReady) mailer.trySend({ to: user.email, subject: 'Votre première boîte mail', text: initialPassword
       ? `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nMot de passe initial : ${initialPassword}\nChangez-le dès la première connexion.`
       : `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nOuvrez l'application Freda Mail et connectez-vous avec cette adresse et le mot de passe que vous avez choisi (il n'est jamais envoyé par e-mail).` });
@@ -305,6 +346,11 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       const r = await registrar.renew({ domain, years });
       if (r.orderAmount !== null && r.orderAmount > o.payload.line.cost * 1.1 + 0.5) await alert('warn', 'Coût de renouvellement supérieur au devis', { domain, expected: o.payload.line.cost, charged: r.orderAmount });
     } catch (e) {
+      if (o.payment_method === 'balance' && await refund(o, o.amount, 'renewal_failed')) {   // payé avec le solde : recrédité tout de suite
+        await setOrder(o.id, { status: 'refunded', error: 'Renouvellement impossible : solde recrédité.' });
+        await alert('warn', 'Renouvellement échoué chez NameSilo : solde du client recrédité', { domain, reference: o.reference });
+        return;
+      }
       await setOrder(o.id, { status: 'needs_attention', error: 'Renouvellement NameSilo échoué : ' + (e.detail || e.message) });
       await alert('error', 'Renouvellement payé mais échoué chez NameSilo', { domain, reference: o.reference });
       mailer.trySend({ to: user.email, ...templates.renewalFailed(user, domain) });
@@ -319,10 +365,15 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       await activity(o.user_id, 'refresh-cw', `Domaine ${domain} renouvelé jusqu'au ${base.toISOString().slice(0, 10)}`);
     });
     await setOrder(o.id, { status: 'completed' });
-    mailer.trySend({ to: user.email, ...templates.receipt(user, o, cfg.appUrl) });
+    await sendReceipt(user, o);
   }
 
-  return { create, status, sweep, fulfill, summarize, planAmount, confirmByReference, failByReference, paymentSession, cardsEnabled: !!payments.cards };
+  async function renewalAmount(userId, domain, years = 1) {
+    const d = await db.get("SELECT name FROM domains WHERE user_id = ? AND name = ? AND status = 'active' AND external = 0", userId, String(domain).toLowerCase());
+    return d ? (await catalog.renewalQuote(d.name, years)).amount : null;
+  }
+
+  return { create, status, sweep, fulfill, summarize, planAmount, renewalAmount, hooks, confirmByReference, failByReference, paymentSession, cardsEnabled: !!payments.cards };
 }
 
 module.exports = { createOrders };

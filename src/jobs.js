@@ -10,12 +10,65 @@ const { templates } = require('./mailer');
 
 const DAY = 86400000;
 const THRESHOLDS = [[30, 1], [14, 2], [7, 4], [1, 8]];     // [jours restants, bit déjà notifié]
-const SUB_THRESHOLDS = [[5, 1], [1, 2]];
+const SUB_THRESHOLDS = [[7, 1], [3, 8], [1, 2]];          // rappels avant échéance (jours, bit) ; bit 4 = jour de l'échéance
+const BALANCE_PAY_AT_DAYS_LEFT = 2;                         // paiement avec le solde : 2 jours avant l'échéance (la période suivante part de l'échéance : aucun jour perdu)
+const DOMAIN_BALANCE_AT_DAYS_LEFT = 7;
 const DOMAIN_RETRY_AT_DAYS_LEFT = [7, 3, 1];             // renouvellement automatique des domaines : 7 j, 3 j et 1 j avant l'expiration
 const RETRY_AT_DAYS_LEFT = [0, -3, -5];                 // tentatives de prélèvement automatique : à l'échéance, puis +3 j et +5 j
 
-function createJobs({ cfg, db, orders, mailer, mail, log }) {
+function createJobs({ cfg, db, orders, mailer, mail, log, balance }) {
   const daysLeft = (iso, now) => Math.ceil((new Date(iso + 'T00:00:00Z').getTime() - now.getTime()) / DAY);
+
+  /** Adresses à prévenir : l'e-mail d'inscription ET la boîte Freda Mail créée (propriétaire d'abord) : le client voit l'alerte où qu'il lise son courrier. */
+  async function contactsOf(userId, email) {
+    const box = await db.get("SELECT address FROM mailboxes WHERE user_id = ? AND provider_status IN ('active','suspended') ORDER BY (role = 'Propriétaire') DESC, created_at LIMIT 1", userId);
+    return [...new Set([email, box && box.address].filter(Boolean).map((a) => a.toLowerCase()))];
+  }
+  const notifyAll = async (userId, email, msg) => { for (const to of await contactsOf(userId, email)) await mailer.trySend({ to, ...msg }); };
+
+  /** Paye l'offre arrivée (presque) à échéance avec le solde, sans action du client, dès que le solde suffit. Une seule tentative par période. */
+  async function autoPayBalance(s, now) {
+    if (daysLeft(s.renews_at, now) > BALANCE_PAY_AT_DAYS_LEFT) return false;
+    const u = await db.get('SELECT * FROM users WHERE id = ?', s.user_id);
+    if (!u || !u.auto_pay_balance) return false;
+    const amount = orders.planAmount(s.plan, s.cycle);
+    if ((await balance.get(s.user_id)) < amount - 0.00001) return false;      // pas assez : les rappels « solde insuffisant » partent plus bas
+    const key = `autopay-bal-${s.user_id}-${s.renews_at}`;
+    if ((await db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', s.user_id, key))) return false;
+    try {
+      const o = await orders.create({ user: u, system: true, idempotencyKey: key, body: { kind: 'subscription', plan: s.plan, cycle: s.cycle, renewal: true, method: 'balance' } });
+      log('info', 'autopay_balance', { userId: s.user_id, status: o.status });
+    } catch (e) { log('warn', 'autopay_balance_failed', { userId: s.user_id, message: e.message }); }
+    const after = await db.get('SELECT renews_at FROM subscriptions WHERE user_id = ?', s.user_id);
+    return !!after && after.renews_at !== s.renews_at;
+  }
+
+  /** Renouvelle 1 an un domaine avec le solde, 7 jours avant l'expiration (un domaine échu entre en période de rédemption, plus chère). */
+  async function autoRenewDomainBalance(d, now) {
+    if (daysLeft(d.expires_at, now) > DOMAIN_BALANCE_AT_DAYS_LEFT) return false;
+    const u = await db.get('SELECT * FROM users WHERE id = ?', d.user_id);
+    if (!u || !u.auto_pay_balance) return false;
+    const amount = await orders.renewalAmount(d.user_id, d.name, 1);
+    if (amount === null || (await balance.get(d.user_id)) < amount - 0.00001) return false;
+    if ((await db.get("SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?", `%"domain":"${d.name}"%`))) return false;
+    const key = `autopay-bal-dom-${d.id}-${d.expires_at}`;
+    if ((await db.get('SELECT 1 FROM idempotency WHERE user_id = ? AND key = ?', d.user_id, key))) return false;
+    try {
+      const o = await orders.create({ user: u, system: true, idempotencyKey: key, body: { kind: 'renewal', domain: d.name, years: 1, method: 'balance' } });
+      log('info', 'autopay_balance_domain', { domain: d.name, status: o.status });
+    } catch (e) { log('warn', 'autopay_balance_domain_failed', { domain: d.name, message: e.message }); }
+    const after = await db.get('SELECT expires_at FROM domains WHERE id = ?', d.id);
+    return !!after && after.expires_at !== d.expires_at;
+  }
+
+  /** Après une recharge : paie tout de suite ce qui est dû (offre échue ou presque, domaine proche de l'expiration). */
+  async function payForUser(userId, now = new Date()) {
+    let n = 0;
+    const s = await db.get("SELECT * FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due','suspended') AND cancel_at_period_end = 0", userId);
+    if (s && await autoPayBalance(s, now)) n++;
+    for (const d of await db.all("SELECT * FROM domains WHERE user_id = ? AND external = 0 AND dry_run = 0 AND auto_renew = 1 AND status IN ('active','expired') AND expires_at <> ''", userId)) if (await autoRenewDomainBalance(d, now)) n++;
+    return n;
+  }
 
   /** Renouvelle 1 an un domaine sur la carte enregistrée, quelques jours AVANT l'expiration (un domaine échu entre en période de rédemption, plus chère). Retourne true si renouvelé. */
   async function autoRenewDomain(d, now) {
@@ -45,6 +98,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
       const user = { name: d.uname };
       if (left < 0 && d.status === 'active') await db.run("UPDATE domains SET status = 'expired' WHERE id = ?", d.id);
       if (!d.auto_renew) continue;                       // le client a désactivé le renouvellement automatique et les rappels pour ce domaine
+      if (await autoRenewDomainBalance(d, now)) continue; // renouvelé avec le solde : aucun rappel
       if (await autoRenewDomain(d, now)) continue;       // renouvelé sur la carte enregistrée : aucun rappel
       const link = `${cfg.appUrl}/espace/domaines.html?renew=${encodeURIComponent(d.name)}`;
       if (left <= 0 && !(d.renewal_notices & 16)) { await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, 0, link) }); await db.run('UPDATE domains SET renewal_notices = renewal_notices | 16 WHERE id = ?', d.id); sent++; continue; }
@@ -93,6 +147,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
         }
         continue;
       }
+      if (await autoPayBalance(s, now)) continue;                       // payée avec le solde (même une offre déjà suspendue : le paiement la rouvre)
       if (s.status !== 'suspended' && await autoCharge(s, now)) continue;   // renouvelée automatiquement : ni « past_due » ni rappel
       const user = { name: s.uname };
       const link = `${cfg.appUrl}/espace/facturation.html?renew=1`;
@@ -103,10 +158,20 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
         await mailer.trySend({ to: s.email, ...templates.mailboxesSuspended(user, plan, link) });
         log('warn', 'subscription_suspended', { userId: s.user_id }); continue;
       }
-      if (left <= 0 && !(s.notices & 4)) { await mailer.trySend({ to: s.email, ...templates.subscriptionDue(user, plan, 0, link) }); await db.run('UPDATE subscriptions SET notices = notices | 4 WHERE user_id = ?', s.user_id); sent++; continue; }
+      const price = orders.planAmount(s.plan, s.cycle);
+      const have = await balance.get(s.user_id);
+      const topupLink = `${cfg.appUrl}/espace/facturation.html?topup=${Math.max(cfg.balance.min, Math.ceil(price - have))}`;
+      /** « Solde insuffisant » (e-mail d'inscription + boîte Freda Mail) ; si le solde suffit mais que le paiement automatique est coupé, simple rappel de paiement. */
+      const remind = async (days) => {
+        if (have < price - 0.00001) {
+          const missing = Math.round((price - have) * 100) / 100;
+          await notifyAll(s.user_id, s.email, templates.balanceLow(user, { plan, days, price, balance: have, missing, missingHtg: Math.ceil(missing * cfg.pricing.htgRate), link: topupLink }));
+        } else await notifyAll(s.user_id, s.email, templates.subscriptionDue(user, plan, days, link));
+      };
+      if (left <= 0 && !(s.notices & 4)) { await remind(0); await db.run('UPDATE subscriptions SET notices = notices | 4 WHERE user_id = ?', s.user_id); sent++; continue; }
       const due = SUB_THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(s.notices & bit));
       if (!due.length) continue;
-      await mailer.trySend({ to: s.email, ...templates.subscriptionDue(user, plan, left, link) });
+      await remind(left);
       await db.run('UPDATE subscriptions SET notices = notices | ? WHERE user_id = ?', due.reduce((m, [, bit]) => m | bit, 0), s.user_id);
       sent++;
     }
@@ -136,7 +201,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log }) {
 
   let timer = null;
   return {
-    run,
+    run, payForUser,
     start() { if (timer) return; timer = setInterval(() => run().catch(() => {}), cfg.renewals.intervalMs); timer.unref(); },
     /** Balayage rapide des paiements Pay'm (toutes les minutes) : un client qui ferme l'onglet est quand même servi. */
     startSweeper() { const t = setInterval(async () => orders.sweep().catch(() => {}), 60 * 1000); t.unref(); return t; },
