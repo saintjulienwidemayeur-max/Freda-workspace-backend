@@ -13,7 +13,8 @@
     "live:purelymail": "node scripts/purelymail-live-check.js"
   },
   "dependencies": {
-    "pg": "^8.23.1"
+    "pg": "^8.23.1",
+    "ws": "^8.22.1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.14",
