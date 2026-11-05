@@ -77,7 +77,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
 
   const subscription = async (userId) => {
     const s = await db.get('SELECT * FROM subscriptions WHERE user_id = ?', userId);
-    if (!s) return { user_id: userId, plan: 'free', status: 'active' };   // offre gratuite : 2 boîtes sans paiement
+    if (!s) return { user_id: userId, plan: 'free', status: 'active' };   // offre gratuite : 1 boîte sans paiement
     if (!['active', 'past_due'].includes(s.status)) throw new HttpError(402, 'Votre offre Freda Mail n’est plus active : réglez-la pour continuer.', 'no_subscription');
     return s;
   };

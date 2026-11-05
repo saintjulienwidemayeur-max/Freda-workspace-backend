@@ -4,7 +4,7 @@ const bool = (v, d) => (v === undefined || v === '' ? d : ['1', 'true', 'yes'].i
 
 /** Offres Freda Mail (source de vérité des prix : le serveur, jamais le navigateur). Miroir de assets/js/config.js du frontend. */
 const PLANS = {
-  free: { id: 'free', name: 'Gratuit', monthly: 0, mailboxes: 2, storageGb: 1, free: true },   // 2 boîtes sur le domaine du client, sans abonnement ni paiement
+  free: { id: 'free', name: 'Gratuit', monthly: 0, mailboxes: 1, storageGb: 1, free: true },   // 1 boîte sur le domaine du client, sans abonnement ni paiement
   starter: { id: 'starter', name: 'Starter', monthly: 2.99, mailboxes: 2, storageGb: 2 },
   business: { id: 'business', name: 'Business', monthly: 9.99, mailboxes: 5, storageGb: 15 },
   enterprise: { id: 'enterprise', name: 'Enterprise', monthly: 30, mailboxes: Infinity, perBoxGb: 5 },

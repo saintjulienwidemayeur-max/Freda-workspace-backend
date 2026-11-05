@@ -186,11 +186,10 @@ test('Purelymail : TXT pas encore propagé -> 409 réessayable, aucune boîte fa
 
 test('boîtes : sans offre active -> 402 ; échec Purelymail -> 502 sans boîte fantôme ; sans clé Purelymail -> boîte « en attente »', async () => {
   const t = await withDomain();
-  // sans abonnement = offre gratuite : 2 boîtes, la 3e est refusée (plan_limit) ; un abonnement impayé/résilié, lui, ne retombe pas en gratuit
+  // sans abonnement = offre gratuite : 1 boîte, la 2e est refusée (plan_limit) ; un abonnement impayé/résilié, lui, ne retombe pas en gratuit
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'a', domain: 'neuf.com' } })).status, 200);
-  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'b', domain: 'neuf.com' } })).status, 200);
-  const third = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'c', domain: 'neuf.com' } });
-  assert.strictEqual(third.status, 403); assert.strictEqual((await third.json()).code, 'plan_limit');
+  const second = await t.user('/api/mailboxes', { method: 'POST', body: { local: 'b', domain: 'neuf.com' } });
+  assert.strictEqual(second.status, 403); assert.strictEqual((await second.json()).code, 'plan_limit');
   await t.db.run("INSERT INTO subscriptions (user_id, plan, cycle, status, renews_at, started_at) SELECT id, 'starter', 'monthly', 'cancelled', '2020-01-01', '2019-01-01' FROM users LIMIT 1");
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'd', domain: 'neuf.com' } })).status, 402, 'résilié : pas de retour en gratuit');
   const noKey = await setup({ payments: demoPay, env: { PURELYMAIL_API_KEY: '' } });
@@ -321,16 +320,16 @@ test('MAIL_DNS_BRAND_DOMAIN invalide : le serveur refuse de démarrer', () => {
   assert.ok(assertSafe(loadConfig({ NAMESILO_API_KEY: 'k', JWT_SECRET: 'j'.repeat(40), MAIL_DNS_BRAND_DOMAIN: 'pas un domaine' })).some((e) => /MAIL_DNS_BRAND_DOMAIN/.test(e)));
 });
 
-test('offre gratuite : compte sans abonnement = 2 boîtes (drapeau workspace.free), « free » ne s’achète pas, un abonnement payant remplace la gratuité', async () => {
+test('offre gratuite : compte sans abonnement = 1 boîte (drapeau workspace.free), « free » ne s’achète pas, un abonnement payant remplace la gratuité', async () => {
   const t = await withDomain();
   let w = await (await t.user('/api/workspace')).json();
-  assert.deepStrictEqual(w.free, { mailboxes: 2 }); assert.strictEqual(w.plan, null);
+  assert.deepStrictEqual(w.free, { mailboxes: 1 }); assert.strictEqual(w.plan, null);
   const buy = await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'free', cycle: 'monthly' } });
   assert.strictEqual(buy.status, 400, 'l’offre gratuite n’est pas vendable');
   await t.user('/api/checkout', { method: 'POST', body: { kind: 'subscription', plan: 'starter', cycle: 'monthly' } });
   w = await (await t.user('/api/workspace')).json();
   assert.strictEqual(w.free, null); assert.strictEqual(w.plan.id, 'starter');
-  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'a', domain: 'neuf.com' } })).status, 200);
+  assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'a', domain: 'neuf.com' } })).status, 200, 'Starter = 2 boîtes (la gratuité n’en donne qu’une)');
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'b', domain: 'neuf.com' } })).status, 200);
   assert.strictEqual((await t.user('/api/mailboxes', { method: 'POST', body: { local: 'c', domain: 'neuf.com' } })).status, 403, 'Starter = 2 boîtes : la limite payante s’applique');
 });
