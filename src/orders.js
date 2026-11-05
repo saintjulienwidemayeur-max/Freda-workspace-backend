@@ -10,6 +10,7 @@ const crypto = require('crypto');
 const { HttpError } = require('./errors');
 const { PaymentError, RefundNotSupported } = require('./payments');
 const { templates } = require('./mailer');
+const { cycleMonths, cycleLabel } = require('./plans');
 
 const r2 = (n) => Math.round(n * 100) / 100;
 const today = () => new Date().toISOString().slice(0, 10);
@@ -17,7 +18,7 @@ const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
 const OPEN = ['awaiting_payment', 'fulfilling'];
 const EXPIRE_MS = 2 * 3600 * 1000;
 
-function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log, balance }) {
+function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail, mailer, alert, log, balance, plans }) {
   const parse = (o) => ({ ...o, payload: JSON.parse(o.payload || '{}') });
   const hooks = { afterTopup: null };   // branché par le serveur : après une recharge, payer tout de suite ce qui est dû avec le solde
   // MonCash / NatCash ne permettent aucun remboursement automatique : le remboursement est crédité sur le solde du client (instantané), sauf en mode démo
@@ -52,12 +53,14 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   function planAmount(planId, cycle) {
     const p = cfg.plans[planId];
     if (!p || p.free) throw new HttpError(400, 'Offre inconnue.', 'invalid_plan');   // l'offre gratuite n'est pas vendable
-    if (!['monthly', 'yearly'].includes(cycle)) throw new HttpError(400, 'Période de facturation inconnue.', 'invalid_cycle');
-    return r2(cycle === 'yearly' ? p.monthly * cfg.pricing.yearlyMonthsBilled : p.monthly);
+    const months = cycleMonths(cycle);
+    if (!months) throw new HttpError(400, 'Durée de paiement inconnue (1 à 12 mois).', 'invalid_cycle');
+    return r2(months === 12 ? p.monthly * cfg.pricing.yearlyMonthsBilled : p.monthly * months);   // 12 mois = 2 mois offerts
   }
 
   /* ---------- Création ---------- */
   async function create({ user, body, idempotencyKey, system = false }) {
+    if (plans) await plans.ready;                 // prix des offres modifiés par l'administrateur : chargés avant tout calcul
     const kind = body.kind;
     if (!['domain', 'subscription', 'renewal', 'topup'].includes(kind)) throw new HttpError(400, 'Type d’achat non pris en charge.', 'unsupported_kind');
     if (idempotencyKey) {
@@ -302,12 +305,12 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const existing = await db.get('SELECT * FROM subscriptions WHERE user_id = ?', o.user_id);
     const start = existing && existing.status !== 'cancelled' && existing.renews_at > today() && existing.plan === p.plan ? new Date(existing.renews_at) : new Date();
     const renews = new Date(start);
-    if (p.cycle === 'yearly') renews.setFullYear(renews.getFullYear() + 1); else renews.setMonth(renews.getMonth() + 1);
+    renews.setMonth(renews.getMonth() + cycleMonths(p.cycle));
     await db.tx(async () => {
       await db.run(`INSERT INTO subscriptions (user_id, plan, cycle, status, renews_at, started_at) VALUES (?,?,?,?,?,?)
               ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, cycle = excluded.cycle, status = 'active', renews_at = excluded.renews_at, notices = 0, cancel_at_period_end = 0`,
         o.user_id, p.plan, p.cycle, 'active', renews.toISOString().slice(0, 10), today());
-      await addInvoice(o.user_id, { label: `${plan.name} — ${p.cycle === 'yearly' ? 'annuel' : 'mensuel'}`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
+      await addInvoice(o.user_id, { label: `${plan.name} — ${cycleLabel(p.cycle)}`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
       await activity(o.user_id, 'mail-plus', `Offre ${plan.name} ${p.renewal ? 'renouvelée' : 'activée'}`);
     });
     const back = await mail.reactivateMailboxes(o.user_id);      // offre payée à nouveau : les boîtes suspendues rouvrent

@@ -99,11 +99,19 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     return { tlds: Object.values(book).map((e) => ({ tld: e.tld, price: e.price, compare: e.compare || undefined, renew: e.renew })).sort((a, b) => a.price - b.price) };
   }
 
-  /** Administration : coût NameSilo, prix de vente et marge par extension. */
-  async function priceTable() {
-    const book = await loadBook();
+  /** Administration : coût NameSilo, prix de vente et marge par extension. `candidate` = aperçu de nouvelles valeurs (rien n'est enregistré). */
+  async function priceTable(candidate) {
     const r2 = (x) => Math.round(x * 100) / 100;
-    return { markupPercent: cfg.pricing.markupPercent, minMarkup: cfg.pricing.minMarkup, tlds: Object.values(book).map((e) => ({ tld: e.tld, cost: r2(e.cost), costRenew: r2(e.costRenew), price: e.price, renew: e.renew, margin: r2(e.price - e.cost), marginRenew: r2(e.renew - e.costRenew), marginPercent: Math.round((e.price - e.cost) / e.cost * 1000) / 10 })).sort((a, b) => a.cost - b.cost) };
+    let book, pricing;
+    try {
+      const cur = await priceBook.settings();
+      if (candidate && (candidate.markupPercent !== undefined || candidate.minMarkup !== undefined)) ({ book, pricing } = await priceBook.preview(candidate));
+      else { book = await loadBook(); pricing = { markupPercent: cur.markupPercent, minMarkup: cur.minMarkup }; }
+      return { markupPercent: pricing.markupPercent, minMarkup: pricing.minMarkup, custom: cur.custom, defaults: priceBook.defaults(), limits: { markupPercent: [0, 300], minMarkup: [0, 50] }, tlds: Object.values(book).map((e) => ({ tld: e.tld, cost: r2(e.cost), costRenew: r2(e.costRenew), price: e.price, renew: e.renew, margin: r2(e.price - e.cost), marginRenew: r2(e.renew - e.costRenew), marginPercent: Math.round((e.price - e.cost) / e.cost * 1000) / 10 })).sort((a, b) => a.cost - b.cost) };
+    } catch (e) {
+      if (e.code === 'invalid_pricing') throw new HttpError(400, e.message, 'invalid_pricing');
+      throw e;
+    }
   }
 
   return { search, quote, renewalQuote, prices, priceTable };
