@@ -28,11 +28,13 @@ test('rappels d’expiration : 30 / 14 / 7 / 1 jours, chacun envoyé une seule f
   assert.ok(t.mailer.sent.some((m) => /a expiré/.test(m.subject)));
 });
 
-test('rappels : désactivés si le client coupe le renouvellement ; ignorés pour les domaines dry-run et externes', async () => {
+test('rappels : envoyés même si le client coupe le renouvellement automatique (aucun prélèvement) ; ignorés pour les domaines dry-run et externes', async () => {
   const t = await withDomain();
   await t.db.run('UPDATE domains SET expires_at = ?, auto_renew = 0', days(5)); t.mailer.sent.length = 0;
-  await t.app.app.jobs.run(); assert.strictEqual(t.mailer.sent.length, 0);
-  await t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1');
+  const before = (await t.db.get('SELECT COUNT(*) AS n FROM orders')).n;
+  await t.app.app.jobs.run(); assert.ok(t.mailer.sent.some((m) => /expire dans/.test(m.subject)), 'le rappel part (sinon le domaine expire en silence)');
+  assert.strictEqual((await t.db.get('SELECT COUNT(*) AS n FROM orders')).n, before, 'aucun renouvellement automatique');
+  await t.db.run('UPDATE domains SET auto_renew = 1, dry_run = 1'); t.mailer.sent.length = 0;
   await t.app.app.jobs.run(); assert.strictEqual(t.mailer.sent.length, 0);
 });
 

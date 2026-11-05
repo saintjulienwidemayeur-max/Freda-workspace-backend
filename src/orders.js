@@ -9,7 +9,7 @@
 const crypto = require('crypto');
 const { HttpError } = require('./errors');
 const { PaymentError, RefundNotSupported } = require('./payments');
-const { templates } = require('./mailer');
+const { templates, nm } = require('./mailer');
 const { cycleMonths, cycleLabel } = require('./plans');
 
 const r2 = (n) => Math.round(n * 100) / 100;
@@ -48,7 +48,9 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const keys = Object.keys(patch);
     await db.run(`UPDATE orders SET ${keys.map((k) => k + ' = ?').join(', ')}, updated_at = ? WHERE id = ?`, ...keys.map((k) => (k === 'payload' ? JSON.stringify(patch[k]) : patch[k])), new Date().toISOString(), id);
   };
-  const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash', balance: 'Solde Freda Workspace' }[m] || m);
+  /** Ajout de mois / années sans débordement de fin de mois (31 janv. + 1 mois = 28 févr., pas 3 mars). */
+const addMonths = (d, n) => { const r = new Date(d); const day = r.getDate(); r.setDate(1); r.setMonth(r.getMonth() + n); r.setDate(Math.min(day, new Date(r.getFullYear(), r.getMonth() + 1, 0).getDate())); return r; };
+const methodLabel = (m) => ({ moncash: 'MonCash', natcash: 'NatCash', card: 'Carte', all: 'MonCash / NatCash', balance: 'Solde Freda Workspace' }[m] || m);
 
   function planAmount(planId, cycle) {
     const p = cfg.plans[planId];
@@ -94,7 +96,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     } else {
       const years = Number(body.years || 1);
       if (!Number.isInteger(years) || years < 1 || years > cfg.maxYears) throw new HttpError(400, 'Durée invalide.', 'invalid_years');
-      const d = await db.get("SELECT * FROM domains WHERE user_id = ? AND name = ? AND status = 'active' AND external = 0", user.id, String(body.domain || '').toLowerCase());
+      const d = await db.get("SELECT * FROM domains WHERE user_id = ? AND name = ? AND status IN ('active','expired') AND external = 0", user.id, String(body.domain || '').toLowerCase());
       if (!d) throw new HttpError(404, 'Domaine introuvable ou non renouvelable ici.', 'not_found');
       if ((await db.get(`SELECT 1 FROM orders WHERE kind = 'renewal' AND status IN ('awaiting_payment','fulfilling') AND payload LIKE ?`, `%"domain":"${d.name}"%`)) && !system) throw new HttpError(409, 'Un renouvellement est déjà en attente de paiement pour ce domaine.', 'duplicate');
       const q = await catalog.renewalQuote(d.name, years);
@@ -161,8 +163,10 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     await setOrder(o.id, { last_check: Date.now() });
     if (v && v.status === 'paid') {
       const p = parse(o).payload;
-      if (p.amountHtg && v.amountHtg && v.amountHtg < p.amountHtg * 0.99) { await alert('error', 'Montant Pay\'m inférieur à la commande', { reference: o.reference, expectedHtg: p.amountHtg, paidHtg: v.amountHtg }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
-      if (p.amountCents && v.amountCents && v.amountCents < p.amountCents) { await alert('error', 'Montant carte inférieur à la commande', { reference: o.reference, expectedCents: p.amountCents, paidCents: v.amountCents }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+      // Contrôle du montant, strict et « fail closed » : un montant payé inconnu ou inférieur à l'attendu ne déclenche jamais l'exécution.
+      const short = (expected, paid) => expected > 0 && !(paid >= expected);
+      if (short(p.amountHtg, v.amountHtg)) { await alert('error', 'Montant HTG payé inconnu ou inférieur à la commande', { reference: o.reference, expectedHtg: p.amountHtg, paidHtg: v.amountHtg }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
+      if (short(p.amountCents, v.amountCents)) { await alert('error', 'Montant carte payé inconnu ou inférieur à la commande', { reference: o.reference, expectedCents: p.amountCents, paidCents: v.amountCents }); await setOrder(o.id, { status: 'needs_attention', error: 'Montant payé insuffisant.' }); return await db.get('SELECT * FROM orders WHERE id = ?', o.id); }
       await fulfill(o.id);
       return await db.get('SELECT * FROM orders WHERE id = ?', o.id);
     }
@@ -203,6 +207,12 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     let n = 0;
     for (const r of await db.all("SELECT id, payload FROM orders WHERE status NOT IN ('awaiting_payment','fulfilling') AND payload LIKE '%passwordEnc%'")) {
       const p = JSON.parse(r.payload); if (p.mailbox) delete p.mailbox.passwordEnc; await setOrder(r.id, { payload: p });   // aucun mot de passe (même chiffré) ne survit à une commande terminée
+    }
+    // commande restée « fulfilling » (redémarrage ou crash en pleine exécution) : jamais abandonnée en silence
+    const cutoff = new Date(Date.now() - 10 * 60_000).toISOString();
+    for (const o of await db.all("SELECT id, reference, user_id, kind, amount FROM orders WHERE status = 'fulfilling' AND updated_at < ?", cutoff)) {
+      await setOrder(o.id, { status: 'needs_attention', error: 'Exécution interrompue : à vérifier.' });
+      await alert('error', 'Commande bloquée en exécution (payée, non terminée)', { order: o.id, reference: o.reference, kind: o.kind, amount: o.amount });
     }
     for (const o of await db.all("SELECT * FROM orders WHERE status = 'awaiting_payment' ORDER BY created_at LIMIT 100")) { await checkPayment(o); n++; }
     return { checked: n };
@@ -263,33 +273,50 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   async function fulfillDomain(o, user) {
     const { lines, years } = o.payload;
     const privacy = o.payload.privacy !== false;   // commandes antérieures sans ce champ : confidentialité activée
-    const done = [], failed = [];
+    const done = [], failed = [], doubtful = [];   // doubtful : domaine peut-être enregistré chez le registraire (délai dépassé, ou enregistrement non consigné) : jamais remboursé automatiquement
     for (const l of lines) {
+      let reg;
       try {
-        const reg = await registrar.register({ domain: l.name, years, privacy, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
+        reg = await registrar.register({ domain: l.name, years, privacy, autoRenew: false, contactId: cfg.namesilo.contactId, nameservers: cfg.namesilo.nameservers });
+      } catch (e) {
+        log('error', 'register_failed', { domain: l.name, code: e.code, detail: e.detail || e.message });
+        // Délai dépassé ou réponse illisible : le registraire a pu enregistrer (et débiter) quand même. On vérifie avant de rembourser.
+        if (e.code === 'NETWORK' || e.code === 'PARSE' || /timeout|abort|network/i.test(String(e.message))) {
+          let stillFree = false;
+          try { const av = await registrar.checkAvailability([l.name]); stillFree = av.available.some((d) => d.domain === l.name); } catch (e2) { stillFree = false; }
+          if (!stillFree) { doubtful.push({ name: l.name, price: l.price, reason: 'enregistrement incertain' }); continue; }
+        }
+        failed.push({ name: l.name, price: l.price, reason: e.detail || e.message });
+        continue;
+      }
+      try {
         if (reg.contactFallback) log('warn', 'contact_fallback', { domain: l.name });
         if (reg.nameserversFallback) log('warn', 'nameservers_fallback', { domain: l.name });
-        if (reg.orderAmount !== null && reg.orderAmount > l.cost * 1.1 + 0.5) await alert('warn', 'Coût NameSilo supérieur au devis', { domain: l.name, expected: l.cost, charged: reg.orderAmount });
-        try { await registrar.lock(l.name); } catch (e) { log('warn', 'lock_failed', { domain: l.name }); }
-        const exp = new Date(); exp.setFullYear(exp.getFullYear() + years);
+        if (reg.orderAmount !== null && reg.orderAmount > l.cost * 1.1 + 0.5) await alert('warn', 'Coût du registraire supérieur au devis', { domain: l.name, expected: l.cost, charged: reg.orderAmount });
+        let locked = 1;
+        try { await registrar.lock(l.name); } catch (e) { locked = 0; log('warn', 'lock_failed', { domain: l.name }); }
+        const exp = addMonths(new Date(), 12 * years);
         const first = !(await db.get('SELECT 1 FROM domains WHERE user_id = ?', o.user_id));
-        // auto_renew = rappels et facture de renouvellement envoyés automatiquement par Freda Workspace ; NameSilo reste en auto_renew=0
-        await db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, expires_at, auto_renew, locked, is_primary, dry_run, registrar_cost, order_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-          'dom_' + crypto.randomBytes(8).toString('hex'), o.user_id, l.name, 'active', 0, 'registrar', today(), exp.toISOString().slice(0, 10), 1, 1, first ? 1 : 0, o.dry_run, reg.orderAmount, o.id, new Date().toISOString());
+        const insert = () => db.run('INSERT INTO domains (id, user_id, name, status, external, dns_mode, registered_at, expires_at, auto_renew, locked, is_primary, dry_run, registrar_cost, order_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+          'dom_' + crypto.randomBytes(8).toString('hex'), o.user_id, l.name, 'active', 0, 'registrar', today(), exp.toISOString().slice(0, 10), 1, locked, first ? 1 : 0, o.dry_run, reg.orderAmount, o.id, new Date().toISOString());
+        // le domaine EST enregistré chez le registraire : un échec d'écriture ne doit jamais déclencher un remboursement (on réessaie, puis on alerte)
+        try { await insert(); } catch (e1) { await new Promise((r) => setTimeout(r, 500)); await insert(); }
         await activity(o.user_id, 'globe', `Domaine ${l.name} enregistré`);
         if ((await db.get("SELECT 1 FROM subscriptions WHERE user_id = ? AND status IN ('active','past_due')", o.user_id))) await dns.autofix(o.user_id, l.name, { quiet: true }).catch(() => log('warn', 'autofix_failed', { domain: l.name }));
         done.push(l);
       } catch (e) {
-        log('error', 'register_failed', { domain: l.name, code: e.code, detail: e.detail || e.message });
-        failed.push({ name: l.name, price: l.price, reason: e.detail || e.message });
+        log('error', 'register_recorded_failed', { domain: l.name, message: e.message });
+        doubtful.push({ name: l.name, price: l.price, reason: 'enregistré mais non consigné : ' + e.message });
       }
     }
+    if (doubtful.length) await alert('error', 'Domaine(s) peut-être enregistré(s) sans suite : à vérifier chez le registraire', { order: o.id, reference: o.reference, domains: doubtful.map((d) => d.name) });
     const failedAmount = r2(failed.reduce((s, l) => s + l.price, 0));
     let status = 'completed';
     if (failed.length) {
       const ok = await refund(o, failedAmount, 'registration_failed');
-      status = ok ? (done.length ? 'partially_refunded' : 'refunded') : 'needs_attention';
+      status = ok ? (done.length || doubtful.length ? 'partially_refunded' : 'refunded') : 'needs_attention';
     }
+    if (doubtful.length) status = 'needs_attention';
     const paid = r2(o.amount - (status === 'partially_refunded' || status === 'refunded' ? failedAmount : 0));
     if (done.length && status !== 'needs_attention') await addInvoice(o.user_id, { label: `${done.length > 1 ? 'Domaines ' : 'Domaine '}${done.map((l) => l.name).join(', ')} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: paid, method: methodLabel(o.payment_method), orderId: o.id });
     await setOrder(o.id, { status, payload: { ...o.payload, done: done.map((l) => l.name), failed: failed.map((f) => ({ name: f.name, reason: f.reason })) }, error: status === 'refunded' ? 'Enregistrement impossible.' : '' });
@@ -304,8 +331,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     const plan = cfg.plans[p.plan];
     const existing = await db.get('SELECT * FROM subscriptions WHERE user_id = ?', o.user_id);
     const start = existing && existing.status !== 'cancelled' && existing.renews_at > today() && existing.plan === p.plan ? new Date(existing.renews_at) : new Date();
-    const renews = new Date(start);
-    renews.setMonth(renews.getMonth() + cycleMonths(p.cycle));
+    const renews = addMonths(start, cycleMonths(p.cycle));
     await db.tx(async () => {
       await db.run(`INSERT INTO subscriptions (user_id, plan, cycle, status, renews_at, started_at) VALUES (?,?,?,?,?,?)
               ON CONFLICT(user_id) DO UPDATE SET plan = excluded.plan, cycle = excluded.cycle, status = 'active', renews_at = excluded.renews_at, notices = 0, cancel_at_period_end = 0`,
@@ -338,8 +364,8 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
     await setOrder(o.id, { status: 'completed', payload: { ...clean, mailboxCreated: mailboxReady } });
     await sendReceipt(user, o);
     if (mailboxReady) mailer.trySend({ to: user.email, subject: 'Votre première boîte mail', text: initialPassword
-      ? `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nMot de passe initial : ${initialPassword}\nChangez-le dès la première connexion.`
-      : `Votre boîte ${p.mailbox.local}@${p.domain} est prête.\nOuvrez l'application Freda Mail et connectez-vous avec cette adresse et le mot de passe que vous avez choisi (il n'est jamais envoyé par e-mail).` });
+      ? `Bonjour ${nm(user)},\n\nVotre boîte ${p.mailbox.local}@${p.domain} est prête.\nMot de passe initial : ${initialPassword}\n\nChangez-le dès la première connexion.`
+      : `Bonjour ${nm(user)},\n\nVotre boîte ${p.mailbox.local}@${p.domain} est prête.\nOuvrez l'application Freda Mail et connectez-vous avec cette adresse et le mot de passe que vous avez choisi (il n'est jamais envoyé par e-mail).` });
     return { initialPassword };
   }
 
@@ -360,8 +386,8 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
       return;
     }
     const d = await db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', o.user_id, domain);
-    const base = d.expires_at && d.expires_at > today() ? new Date(d.expires_at) : new Date();
-    base.setFullYear(base.getFullYear() + years);
+    // le registraire prolonge à partir de la date d'expiration d'origine, même en période de grâce
+    const base = addMonths(d.expires_at ? new Date(d.expires_at) : new Date(), 12 * years);
     await db.tx(async () => {
       await db.run("UPDATE domains SET expires_at = ?, renewal_notices = 0, status = 'active' WHERE id = ?", base.toISOString().slice(0, 10), d.id);
       await addInvoice(o.user_id, { label: `Renouvellement ${domain} (${years} ${years > 1 ? 'ans' : 'an'})`, amount: o.amount, method: methodLabel(o.payment_method), orderId: o.id });
@@ -372,7 +398,7 @@ function createOrders({ vault, cfg, db, payments, catalog, registrar, dns, mail,
   }
 
   async function renewalAmount(userId, domain, years = 1) {
-    const d = await db.get("SELECT name FROM domains WHERE user_id = ? AND name = ? AND status = 'active' AND external = 0", userId, String(domain).toLowerCase());
+    const d = await db.get("SELECT name FROM domains WHERE user_id = ? AND name = ? AND status IN ('active','expired') AND external = 0", userId, String(domain).toLowerCase());
     return d ? (await catalog.renewalQuote(d.name, years)).amount : null;
   }
 

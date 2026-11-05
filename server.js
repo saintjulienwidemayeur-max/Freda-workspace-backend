@@ -43,6 +43,12 @@ function createLimiter(max, windowMs) {
     return arr.length <= max;
   };
 }
+/** Compte seulement les ÉCHECS (ex. mauvais jeton admin) : blocked(key) lit sans compter, fail(key) enregistre. */
+function createFailureLimiter(max, windowMs) {
+  const hits = new Map();
+  const recent = (key) => { const now = Date.now(); const arr = (hits.get(key) || []).filter((t) => now - t < windowMs); hits.set(key, arr); return arr; };
+  return { blocked: (key) => recent(key).length >= max, fail: (key) => { recent(key).push(Date.now()); if (hits.size > 5000) for (const [k, v] of hits) if (!v.length || Date.now() - v[v.length - 1] > windowMs) hits.delete(k); } };
+}
 
 function createApp(deps) {
   const cfg = deps.cfg;
@@ -54,8 +60,10 @@ function createApp(deps) {
   const payments = deps.payments || createPayments(cfg, logger, { db });
   const priceBook = createPriceBook({ registrar, cfg, db });
   /* Taux HTG pour 1 $ : modifiable depuis l'administration (app_settings.htg_rate) ; sinon HTG_RATE (132 par défaut). Les paiements MonCash / NatCash le lisent à chaque commande. */
-  const loadRate = async () => { try { const r = await db.get("SELECT value FROM app_settings WHERE key = 'htg_rate'"); const v = r && Number(r.value); if (v > 0) cfg.pricing.htgRate = v; } catch (_) { /* table absente : valeur par défaut */ } };
+  const DEFAULT_RATE = Number(process.env.HTG_RATE) || 132;
+  const loadRate = async () => { try { const r = await db.get("SELECT value FROM app_settings WHERE key = 'htg_rate'"); const v = r ? Number(r.value) : DEFAULT_RATE; if (v >= 50 && v <= 1000) cfg.pricing.htgRate = v; } catch (_) { /* table absente : valeur par défaut */ } };
   db.ready.then(loadRate, () => {});
+  setInterval(loadRate, 60_000).unref();   // plusieurs instances : le taux fixé dans l'administration se propage en moins d'une minute
   const catalog = createDomainCatalog({ cfg, registrar, priceBook, alert, log: logger });
   const accounts = createAccounts({ cfg, db, mailer, log: logger });
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
@@ -81,6 +89,7 @@ function createApp(deps) {
   const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { throw new HttpError(400, 'Adresse de requête invalide.', 'bad_request'); } };
 
   const L = { search: createLimiter(60, 60_000), auth: createLimiter(12, 60_000), buy: createLimiter(10, 60_000), write: createLimiter(120, 60_000), errors: createLimiter(20, 60_000) };
+  const adminFails = createFailureLimiter(8, 10 * 60_000);   // 8 mauvais jetons admin par IP et par 10 minutes
 
   /* Table de routes : [méthode, motif, gestionnaire, options]. Les segments « :nom » ne contiennent pas de « / » (les noms de domaine contiennent des points). */
   const routes = [];
@@ -256,10 +265,10 @@ function createApp(deps) {
     return await catalog.priceTable();
   }, admin);
   /* taux de change HTG pour 1 $ (affichage et montants MonCash / NatCash) */
-  route('GET', '/api/admin/rate', async () => ({ htgRate: cfg.pricing.htgRate }), admin);
+  route('GET', '/api/admin/rate', async () => ({ htgRate: cfg.pricing.htgRate, defaultRate: DEFAULT_RATE }), admin);
   route('PUT', '/api/admin/rate', async (c) => {
     const b = await c.body();
-    const v = b.reset === true ? (Number(process.env.HTG_RATE) || 132) : Number(b.htgRate);
+    const v = b.reset === true ? DEFAULT_RATE : Number(b.htgRate);
     if (!(v >= 50 && v <= 1000)) throw new HttpError(400, 'Le taux doit être compris entre 50 et 1000 HTG pour 1 $.', 'invalid_rate');
     const now = new Date().toISOString();
     if (b.reset === true) await db.run("DELETE FROM app_settings WHERE key = 'htg_rate'");
@@ -294,7 +303,11 @@ function createApp(deps) {
     if (origin && !cors['Access-Control-Allow-Origin'] && !rejectedOrigins.has(origin) && rejectedOrigins.size < 20) { rejectedOrigins.add(origin); log('warn', 'cors_origin_rejected', { origin, hint: 'ajouter cette origine à ALLOWED_ORIGINS' }); }
     const send = (status, body, headers = {}) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...cors, ...headers }); res.end(JSON.stringify(body)); };
     if (req.method === 'OPTIONS') return send(204, {}, { 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, Idempotency-Key', 'Access-Control-Max-Age': '600' });
-    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    // IP du client : derrière N proxys de confiance (Render : 1), on prend la N-ième entrée en partant de la DROITE de X-Forwarded-For.
+    // La première entrée est fournie par le client et ne doit jamais servir de clé de limitation (contournement par en-tête falsifié).
+    const hops = Math.max(0, Number(process.env.TRUSTED_PROXY_HOPS ?? 1));
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const ip = (hops > 0 && xff.length ? xff[Math.max(0, xff.length - hops)] : '') || req.socket.remoteAddress || '';
     const url = new URL(req.url, 'http://x');
     try {
       let matched = null, params = null;
@@ -303,7 +316,8 @@ function createApp(deps) {
       const ctx = { req, url, ip, body: async (max) => (await readJson(req, max)), raw: async (max) => (await readRaw(req, max)) };
       if (matched.opts.admin) {
         const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
-        if (!cfg.adminToken || !m || !tokenEq(m[1], cfg.adminToken)) throw new HttpError(401, 'Accès administrateur requis.', 'unauthorized');
+        if (adminFails.blocked(ip)) throw new HttpError(429, 'Trop de tentatives. Réessayez plus tard.', 'rate_limited');
+        if (!cfg.adminToken || !m || !tokenEq(m[1], cfg.adminToken)) { adminFails.fail(ip); throw new HttpError(401, 'Accès administrateur requis.', 'unauthorized'); }
       }
       if (matched.opts.auth) ctx.user = await authenticate(req);
       if (matched.opts.mailbox) ctx.mailbox = await authenticateMailbox(req);

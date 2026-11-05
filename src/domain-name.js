@@ -17,12 +17,14 @@ function normalizeQuery(raw, knownTlds) {
 }
 
 /** Domaine complet valide dont l'extension est autorisée : { label, tld } ou null. */
+/** Extensions annoncées « bientôt » : jamais vendues, même si elles se retrouvent dans DOMAIN_TLDS. */
+const COMING_SOON = ['.ht'];
 function parseDomain(domain, knownTlds) {
-  const d = String(domain || '').trim().toLowerCase();
+  const d = String(domain || '').trim().toLowerCase().replace(/^www\./, '');
   const dot = d.indexOf('.');
   if (dot < 1) return null;
   const label = d.slice(0, dot), tld = d.slice(dot);
-  if (!LABEL.test(label) || label.slice(2, 4) === '--' || !knownTlds.includes(tld)) return null;
+  if (!LABEL.test(label) || label.slice(2, 4) === '--' || !knownTlds.includes(tld) || COMING_SOON.includes(tld)) return null;
   return { label, tld, domain: label + tld };
 }
 

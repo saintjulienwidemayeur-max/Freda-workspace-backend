@@ -91,7 +91,7 @@ function createFcm(cfg) {
       if (r.status === 200) return { ok: true };
       const err = r.json && r.json.error || {};
       const code = (err.details || []).map((d) => d.errorCode).find(Boolean);
-      if (r.status === 404 || code === 'UNREGISTERED' || (r.status === 400 && err.status === 'INVALID_ARGUMENT' && /registration token|token/i.test(err.message || ''))) return { invalid: true };
+      if (code === 'UNREGISTERED' || (r.status === 400 && err.status === 'INVALID_ARGUMENT' && /registration token|token/i.test(err.message || ''))) return { invalid: true };
       throw new Error(`fcm_${r.status}_${err.status || code || ''}`);
     },
   };

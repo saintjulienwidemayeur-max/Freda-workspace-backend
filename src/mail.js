@@ -289,9 +289,10 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   const LOCK_MS = 15 * 60 * 1000, MAX_FAILS = 5;
   async function appLogin({ email, address: addr, username, password }) {
     const address = String(email || addr || username || '').trim().toLowerCase();
+    const key = address;   // verrou par adresse (protège contre les essais répartis sur plusieurs IP) ; la limite par IP est appliquée en amont (L.auth)
     const bad = () => new HttpError(401, 'Adresse ou mot de passe incorrect.', 'invalid_credentials');
     if (!/^[^@\s]+@[^@\s]+$/.test(address) || typeof password !== 'string' || !password || password.length > 256) throw bad();
-    const f = failures.get(address);
+    const f = failures.get(key);
     if (f && f.n >= MAX_FAILS && Date.now() - f.t < LOCK_MS) throw new HttpError(429, 'Trop de tentatives. Réessayez dans quelques minutes.', 'rate_limited');
     const b = await db.get('SELECT * FROM mailboxes WHERE address = ?', address);
     if (!b) { log('info', 'mail_login_failed', { address, reason: 'unknown_address' }); await new Promise((r) => setTimeout(r, 150)); throw bad(); }
@@ -300,16 +301,16 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     const t0 = Date.now();
     const reserved = f && t0 - f.t < LOCK_MS ? f.n + 1 : 1;
-    failures.set(address, { n: reserved, t: t0 });   // tentative comptée AVANT la vérification (annulée en cas de succès)
+    failures.set(key, { n: reserved, t: t0 });   // tentative comptée AVANT la vérification (annulée en cas de succès)
     let result;
     try { result = await imapLogin({ host: cfg.imap.host, port: cfg.imap.port, secure: cfg.imap.secure, user: address, pass: password }); }
-    catch (e) { if (reserved > 1) failures.set(address, { n: reserved - 1, t: t0 }); else failures.delete(address); log('warn', 'imap_check_failed', { message: e.message }); throw new HttpError(503, 'Le serveur de messagerie ne répond pas. Réessayez.', 'mail_provider_error'); }
+    catch (e) { if (reserved > 1) failures.set(key, { n: reserved - 1, t: t0 }); else failures.delete(key); log('warn', 'imap_check_failed', { message: e.message }); throw new HttpError(503, 'Le serveur de messagerie ne répond pas. Réessayez.', 'mail_provider_error'); }
     if (result !== 'ok') {
       log('info', 'mail_login_failed', { address, reason: 'imap_denied', attempts: reserved, passwordLength: password.length });   // jamais le mot de passe lui-même
       if (failures.size > 5000) for (const [k, v] of failures) if (Date.now() - v.t > LOCK_MS) failures.delete(k);
       throw bad();
     }
-    failures.delete(address);
+    failures.delete(key);
     log('info', 'mail_login_ok', { address });
     await db.run('UPDATE mailboxes SET last_login = ? WHERE id = ?', new Date().toISOString(), b.id);
     return { mailbox: { address: b.address, name: b.name, status: 'active' }, token: issueMailboxToken(cfg, b), tokenExpiresInDays: cfg.push.sessionDays, ...connection() };
@@ -317,8 +318,8 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
 
   /** Réglages IMAP / SMTP publiés par Purelymail (https://purelymail.com/docs/setup/technical). */
   const connection = () => ({
-    imap: { host: 'imap.purelymail.com', port: 993, security: 'ssl' },
-    smtp: { host: 'smtp.purelymail.com', port: 465, security: 'ssl', alternative: { port: 587, security: 'starttls' } },
+    imap: { host: process.env.IMAP_PUBLIC_HOST || 'imap.purelymail.com', port: 993, security: 'ssl' },   // IMAP_PUBLIC_HOST / SMTP_PUBLIC_HOST : noms de marque (CNAME vers le fournisseur) affichés aux clients
+    smtp: { host: process.env.SMTP_PUBLIC_HOST || 'smtp.purelymail.com', port: 465, security: 'ssl', alternative: { port: 587, security: 'starttls' } },
   });
 
   return { listBoxes, listAliases, connection, changePassword, appLogin, validatePassword, ownership, provider: pm, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };

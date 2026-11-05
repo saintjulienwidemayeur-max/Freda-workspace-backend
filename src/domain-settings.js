@@ -30,7 +30,7 @@ function createDomainSettings({ db, registrar, mailer, alert, log, cfg }) {
   /** NameSilo envoie le code EPP au contact administratif du compte revendeur, pas au client : le support Freda Workspace le transmet. */
   async function requestTransferCode(userId, name) {
     const d = await own(userId, name);
-    if (d.external) throw new HttpError(400, 'Ce domaine n’est pas enregistré chez Freda.', 'external_domain');
+    if (d.external) throw new HttpError(400, 'Ce domaine n’est pas enregistré chez Freda Workspace.', 'external_domain');
     if (d.status !== 'active') throw new HttpError(409, 'Ce domaine n’est pas actif.', 'inactive');
     if (d.locked) throw new HttpError(409, 'Déverrouillez d’abord le domaine pour autoriser son transfert.', 'locked');
     try { await registrar.requestAuthCode(d.name); }

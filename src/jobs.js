@@ -97,9 +97,9 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
       const left = daysLeft(d.expires_at, now);
       const user = { name: d.uname };
       if (left < 0 && d.status === 'active') await db.run("UPDATE domains SET status = 'expired' WHERE id = ?", d.id);
-      if (!d.auto_renew) continue;                       // le client a désactivé le renouvellement automatique et les rappels pour ce domaine
-      if (await autoRenewDomainBalance(d, now)) continue; // renouvelé avec le solde : aucun rappel
-      if (await autoRenewDomain(d, now)) continue;       // renouvelé sur la carte enregistrée : aucun rappel
+      // renouvellement automatique désactivé : on ne prélève rien, mais le client reçoit toujours les rappels (sinon le domaine expirerait en silence)
+      if (d.auto_renew && await autoRenewDomainBalance(d, now)) continue; // renouvelé avec le solde : aucun rappel
+      if (d.auto_renew && await autoRenewDomain(d, now)) continue;       // renouvelé sur la carte enregistrée : aucun rappel
       const link = `${cfg.appUrl}/espace/domaines.html?renew=${encodeURIComponent(d.name)}`;
       if (left <= 0 && !(d.renewal_notices & 16)) { await mailer.trySend({ to: d.email, ...templates.domainExpiring(user, d.name, 0, link) }); await db.run('UPDATE domains SET renewal_notices = renewal_notices | 16 WHERE id = ?', d.id); sent++; continue; }
       const due = THRESHOLDS.filter(([days, bit]) => left <= days && left > 0 && !(d.renewal_notices & bit));
@@ -188,7 +188,7 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
     return n;
   }
 
-  async function run(now = new Date()) {
+  async function runOnce(now = new Date()) {
     const out = {};
     if (plans) await plans.ready;
     try { out.sweep = await orders.sweep(); } catch (e) { log('error', 'job_sweep_failed', { message: e.message }); }
@@ -200,10 +200,22 @@ function createJobs({ cfg, db, orders, mailer, mail, log, balance, plans }) {
     return out;
   }
 
+  /** Une seule exécution à la fois (minuteur + endpoint admin + démarrage) : sinon un même rappel pourrait partir deux fois. */
+  let running = false;
+  async function run(...args) {
+    if (running) return { skipped: true };
+    running = true;
+    try { return await runOnce(...args); } finally { running = false; }
+  }
+
   let timer = null;
   return {
     run, payForUser,
-    start() { if (timer) return; timer = setInterval(() => run().catch(() => {}), cfg.renewals.intervalMs); timer.unref(); },
+    start() {
+      if (timer) return;
+      timer = setInterval(() => run().catch(() => {}), cfg.renewals.intervalMs); timer.unref();
+      setTimeout(() => run().catch(() => {}), 60_000).unref();   // premier passage 1 min après le démarrage : un redémarrage (déploiement, réveil) ne repousse plus les échéances de 6 h
+    },
     /** Balayage rapide des paiements Pay'm (toutes les minutes) : un client qui ferme l'onglet est quand même servi. */
     startSweeper() { const t = setInterval(async () => orders.sweep().catch(() => {}), 60 * 1000); t.unref(); return t; },
     stop() { if (timer) clearInterval(timer); timer = null; },

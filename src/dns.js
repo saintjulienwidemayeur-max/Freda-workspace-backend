@@ -108,6 +108,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
       if (!existing) throw new HttpError(404, 'Enregistrement introuvable.', 'not_found');
       if (existing.managed && (existing.type !== v.type || existing.name !== v.name)) throw new HttpError(400, 'Les enregistrements email gérés par Freda Workspace ne peuvent pas changer de type ou de nom.', 'managed_record');
     } else if (count >= 100) throw new HttpError(400, 'Limite de 100 enregistrements atteinte.', 'limit');
+    if (isSpf(v) && (await db.get("SELECT id, type, value FROM dns_records WHERE domain_id = ? AND type = 'TXT' AND name = ? AND LOWER(value) LIKE 'v=spf1%' AND id <> ?", d.id, v.name, existing ? existing.id : ''))) throw new HttpError(409, 'Ce domaine a déjà un enregistrement SPF : un seul est autorisé. Modifiez l’existant.', 'duplicate_spf');
     if (!existing && (await db.get('SELECT 1 FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? AND value = ?', d.id, v.type, v.name, v.value))) throw new HttpError(409, 'Cet enregistrement existe déjà.', 'duplicate');
     let providerId = existing ? existing.provider_id : '';
     if (usesRegistrarDns(d)) {
@@ -135,6 +136,16 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     return { ok: true };
   }
 
+  const isSpf = (r) => r.type === 'TXT' && /^v=spf1(\s|$)/i.test(String(r.value).trim());
+  /** Fusionne le SPF de Freda Workspace dans un SPF existant (un domaine ne doit avoir qu'UN enregistrement SPF : deux provoquent une erreur permanente). */
+  function mergeSpf(existing, tpl) {
+    const mech = (v) => String(v).trim().split(/\s+/).slice(1);
+    const have = mech(existing), allTok = have.find((t) => /^[~?+-]?all$/i.test(t));
+    const add = mech(tpl).filter((t) => !/^[~?+-]?all$/i.test(t) && !have.includes(t));
+    const body = have.filter((t) => t !== allTok);
+    return ['v=spf1', ...body, ...add, allTok || mech(tpl).find((t) => /^[~?+-]?all$/i.test(t)) || '~all'].join(' ');
+  }
+
   /** Ajoute les enregistrements e-mail manquants. Retourne le nombre ajouté. */
   async function autofix(userId, name, { quiet = false } = {}) {
     const d = await ownDomain(userId, name);
@@ -144,6 +155,9 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
       if (have.some((r) => r.type === t.type && r.name === t.name && r.value === t.value)) continue;
       // un ancien enregistrement e-mail incorrect (même type/nom, autre valeur) est remplacé plutôt que dupliqué (sauf TXT : plusieurs TXT sont légitimes)
       const stale = t.type !== 'TXT' && have.find((r) => r.type === t.type && r.name === t.name && r.managed);
+      // SPF : si le client en a déjà un, on le complète au lieu d'en ajouter un second
+      const spf = isSpf(t) && have.find((r) => isSpf(r) && r.name === t.name);
+      if (spf) { await save(userId, name, { ...t, id: spf.id, value: mergeSpf(spf.value, t.value), managed: true, ttl: 3600 }); added++; continue; }
       await save(userId, name, { ...t, id: stale && stale.id, managed: true, ttl: 3600 });
       added++;
     }
@@ -193,7 +207,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     if (!['nameservers', 'records'].includes(mode)) throw new HttpError(400, 'Méthode inconnue.', 'invalid_mode');
     const mine = await db.get('SELECT * FROM domains WHERE user_id = ? AND name = ?', userId, name);
     if (mine && mine.status !== 'pending') throw new HttpError(409, 'Ce domaine est déjà dans votre espace.', 'duplicate');
-    if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", name))) throw new HttpError(409, 'Ce domaine appartient déjà à un autre compte Freda.', 'domain_taken');
+    if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending'", name))) throw new HttpError(409, 'Ce domaine appartient déjà à un autre compte Freda Workspace.', 'domain_taken');
     let did;
     await db.tx(async () => {
       if (mine) { did = mine.id; await db.run('UPDATE domains SET dns_mode = ? WHERE id = ?', mode, did); }
@@ -241,7 +255,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
       }
     } catch (e) { if (e instanceof HttpError) throw e; missing.push('DNS'); }
     if (missing.length) return { connected: false, missing };
-    if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending' AND id <> ?", d.name, d.id))) throw new HttpError(409, 'Ce domaine a déjà été vérifié par un autre compte Freda.', 'domain_taken');
+    if ((await db.get("SELECT 1 FROM domains WHERE name = ? AND status <> 'pending' AND id <> ?", d.name, d.id))) throw new HttpError(409, 'Ce domaine a déjà été vérifié par un autre compte Freda Workspace.', 'domain_taken');
     await db.run("UPDATE domains SET status = 'active', connected_at = ? WHERE id = ?", new Date().toISOString().slice(0, 10), d.id);
     await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'badge-check', `Domaine ${d.name} connecté`, new Date().toISOString().slice(0, 16).replace('T', ' '));
     return { connected: true, missing: [] };
