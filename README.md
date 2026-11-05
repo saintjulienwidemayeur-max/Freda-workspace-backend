@@ -83,8 +83,8 @@ Toutes sont listées avec leur valeur par défaut dans `.env.example`. En plus d
 | `DATABASE_POOL_MAX`, `DATABASE_CA` | Pool PostgreSQL, certificat CA | 10 / – |
 | `STRIPE_UI_MODE` | `embedded` (formulaire dans le site) ou `hosted` | embedded |
 
-## Offre gratuite (2 boîtes)
-Tout compte **sans abonnement** a droit à **2 boîtes** (`PLANS.free`, `workspace.free`) sur **son propre domaine** (acheté ici ou connecté et vérifié). Aucune ligne d'abonnement, aucun paiement, aucun rappel ; un abonnement payant la remplace (limite de l'offre payante). Un abonnement **existant mais impayé ou résilié ne retombe pas en gratuit** (boîtes suspendues jusqu'au règlement). Garde-fous contre l'abus : domaine vérifié par Purelymail avant toute boîte, 2 boîtes maximum, création verrouillée par compte. **Pas de vérification d'e-mail à l'inscription** : surveillez les créations de boîtes (journal `Boîte … créée`) et les plaintes de spam, qui engagent votre compte Purelymail.
+## Offre gratuite (1 boîte)
+Tout compte **sans abonnement** a droit à **1 boîte** (`PLANS.free`, `workspace.free`) sur **son propre domaine** (acheté ici ou connecté et vérifié). Aucune ligne d'abonnement, aucun paiement, aucun rappel ; un abonnement payant la remplace (limite de l'offre payante). Un abonnement **existant mais impayé ou résilié ne retombe pas en gratuit** (boîtes suspendues jusqu'au règlement). Garde-fous contre l'abus : domaine vérifié par Purelymail avant toute boîte, 1 boîte maximum, création verrouillée par compte. **Pas de vérification d'e-mail à l'inscription** : surveillez les créations de boîtes (journal `Boîte … créée`) et les plaintes de spam, qui engagent votre compte Purelymail.
 
 ## À savoir / limites (honnêtement)
 1. **Pas de remboursement automatique Pay'm** : l'API ne renvoie pas le numéro du payeur. Un échec après paiement met la commande en `needs_attention` et déclenche une **alerte** : remboursement manuel (`GET /api/admin/orders`).
