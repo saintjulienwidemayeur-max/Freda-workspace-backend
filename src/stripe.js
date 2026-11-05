@@ -97,6 +97,8 @@ function createStripe({ cfg, db, log }) {
       // PAS de payment_method_types : Checkout propose TOUS les moyens activés dans le Dashboard Stripe (Paramètres > Moyens de paiement) et éligibles pour la devise,
       // le montant et le pays du client. Seule la CARTE est enregistrée pour les prélèvements automatiques (les autres moyens ne servent qu'à ce paiement).
       mode: 'payment', customer, client_reference_id: reference,
+      // Les Managed Payments de Stripe (marchand officiel, codes fiscaux produit obligatoires) ne conviennent pas aux noms de domaine ni aux frais de traitement : désactivés pour ces sessions.
+      managed_payments: { enabled: false },
       ...(cfg.payments.stripe.paymentMethodConfig ? { payment_method_configuration: cfg.payments.stripe.paymentMethodConfig } : {}),
       line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: cents(amount), product_data: { name: label || 'Freda Workspace' } } }, { quantity: 1, price_data: { currency: 'usd', unit_amount: cents(cardFee(amount)), product_data: { name: 'Frais de traitement du paiement (3,5 % + 0,40 $)' } } }],
       payment_method_options: { card: { setup_future_usage: 'off_session' } },
