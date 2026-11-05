@@ -53,6 +53,9 @@ function createApp(deps) {
   const alert = deps.alert || createAlerts(cfg, logger);
   const payments = deps.payments || createPayments(cfg, logger, { db });
   const priceBook = createPriceBook({ registrar, cfg, db });
+  /* Taux HTG pour 1 $ : modifiable depuis l'administration (app_settings.htg_rate) ; sinon HTG_RATE (132 par défaut). Les paiements MonCash / NatCash le lisent à chaque commande. */
+  const loadRate = async () => { try { const r = await db.get("SELECT value FROM app_settings WHERE key = 'htg_rate'"); const v = r && Number(r.value); if (v > 0) cfg.pricing.htgRate = v; } catch (_) { /* table absente : valeur par défaut */ } };
+  db.ready.then(loadRate, () => {});
   const catalog = createDomainCatalog({ cfg, registrar, priceBook, alert, log: logger });
   const accounts = createAccounts({ cfg, db, mailer, log: logger });
   const dns = createDns({ cfg, db, registrar, log: logger, resolve: deps.resolve });
@@ -88,7 +91,7 @@ function createApp(deps) {
     try { await db.get('SELECT COUNT(*) AS n FROM app_migrations'); } catch (e) { logger('error', 'health_db_failed', { message: e.message }); throw new HttpError(503, 'Base de données inaccessible.', 'db_unavailable'); }   // 503 : Render ne route plus vers une instance sans base
     return { ok: true, database: true, registrar: cfg.namesilo.mode, payments: payments.name, mailer: cfg.mailer.provider, mailProvider: mail.providerEnabled, cards: !!payments.cards };
   });
-  route('GET', '/api/plans', async () => plans.publicView());   // prix des offres (modifiables par l'administrateur) : le site les affiche
+  route('GET', '/api/plans', async () => ({ ...(await plans.publicView()), htgRate: cfg.pricing.htgRate }));   // prix des offres (modifiables par l'administrateur) : le site les affiche
   route('GET', '/api/domains/prices', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.prices(); });
   route('GET', '/api/domains/search', async (c) => { limit(L.search, c.ip, 'Trop de recherches. Réessayez dans une minute.'); return catalog.search(c.url.searchParams.get('q'), c.url.searchParams.get('part')); });
   route('POST', '/api/auth/signup', async (c) => { limit(L.auth, c.ip); return await accounts.signup(await c.body()); });
@@ -251,6 +254,19 @@ function createApp(deps) {
     const now = await priceBook.settings();
     logger('info', 'pricing_changed', { markupPercent: now.markupPercent, minMarkup: now.minMarkup, custom: now.custom });
     return await catalog.priceTable();
+  }, admin);
+  /* taux de change HTG pour 1 $ (affichage et montants MonCash / NatCash) */
+  route('GET', '/api/admin/rate', async () => ({ htgRate: cfg.pricing.htgRate }), admin);
+  route('PUT', '/api/admin/rate', async (c) => {
+    const b = await c.body();
+    const v = b.reset === true ? (Number(process.env.HTG_RATE) || 132) : Number(b.htgRate);
+    if (!(v >= 50 && v <= 1000)) throw new HttpError(400, 'Le taux doit être compris entre 50 et 1000 HTG pour 1 $.', 'invalid_rate');
+    const now = new Date().toISOString();
+    if (b.reset === true) await db.run("DELETE FROM app_settings WHERE key = 'htg_rate'");
+    else await db.run('INSERT INTO app_settings (key, value, updated_at) VALUES (?,?,?) ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at', 'htg_rate', String(v), now);
+    cfg.pricing.htgRate = v;
+    logger('info', 'rate_changed', { htgRate: v });
+    return { htgRate: v };
   }, admin);
   route('GET', '/api/admin/orders', async (c) => ({ orders: await db.all('SELECT id, reference, user_id, kind, status, amount, error, created_at FROM orders WHERE status = ? ORDER BY created_at DESC LIMIT 100', c.url.searchParams.get('status') || 'needs_attention') }), admin);
 
