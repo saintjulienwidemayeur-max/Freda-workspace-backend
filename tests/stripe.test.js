@@ -20,6 +20,7 @@ test('carte : Checkout hébergé avec carte enregistrée pour plus tard, montant
   assert.strictEqual(r.status, 'pending');
   assert.match(r.redirectUrl, /^https:\/\/checkout\.stripe\.test\/cs_/);
   const c = t.stripe.calls.find((x) => x.path === '/v1/checkout/sessions');
+  assert.strictEqual(c.f['managed_payments[enabled]'], 'false', 'Managed Payments désactivé (pas de code fiscal produit)');
   assert.strictEqual(c.f['line_items[0][price_data][unit_amount]'], '1299', 'prix serveur (12,99 $) en cents, pas le 0,01 du navigateur');
   assert.strictEqual(c.f['payment_method_options[card][setup_future_usage]'], 'off_session', 'seule la carte est enregistrée pour les prélèvements');
   assert.ok(!Object.keys(c.f).some((k) => k.startsWith('payment_method_types')), 'aucune liste figée : Checkout propose tous les moyens activés au Dashboard');
