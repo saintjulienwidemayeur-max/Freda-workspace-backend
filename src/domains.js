@@ -67,6 +67,9 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     catch (e) { log('error', 'availability_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'Le registraire ne répond pas. Aucun paiement n’a été effectué.', 'registrar_error'); }
     const ok = new Set(avail.available.filter(sellable).map((d) => d.domain));
     const unavailable = parsed.filter((p) => !ok.has(p.domain)).map((p) => p.domain);
+    if (unavailable.length) {
+      log('warn', 'quote_unavailable', { asked: parsed.map((p) => p.domain), available: avail.available.map((d) => ({ domain: d.domain, premium: d.premium })), unavailable: avail.unavailable, invalid: avail.invalid });
+    }
     if (unavailable.length) throw new HttpError(409, 'Domaine indisponible : ' + unavailable.join(', '), 'domain_unavailable');
     const book = await loadBook();
     const lines = parsed.map((p) => {
