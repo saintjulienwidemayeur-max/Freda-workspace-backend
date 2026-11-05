@@ -88,7 +88,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   };
 
   /**
-   * Garantit que le domaine existe chez Purelymail : publie le TXT de propriété (zone gérée par Freda) puis addDomain.
+   * Garantit que le domaine existe chez Purelymail : publie le TXT de propriété (zone gérée par Freda Workspace) puis addDomain.
    * Le DNS met parfois quelques minutes à se propager : tant que Purelymail refuse, on répond 409 (réessayer) sans créer de boîte fantôme.
    */
   async function ensureProviderDomain(userId, d) {
@@ -108,7 +108,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
 
   /**
    * Étape « vérification du domaine pour l'email » : l'enregistrement TXT à publier + l'état (verified : accepté par Purelymail ; dns_ok : visible dans le DNS,
-   * la prochaine création de boîte réussira ; pending : pas encore visible). Zone gérée par Freda : publié automatiquement ; domaine externe : à ajouter chez l'hébergeur.
+   * la prochaine création de boîte réussira ; pending : pas encore visible). Zone gérée par Freda Workspace : publié automatiquement ; domaine externe : à ajouter chez l'hébergeur.
    */
   async function ownership(userId, domain) {
     const d = await ownDomain(userId, domain);
@@ -296,7 +296,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     const b = await db.get('SELECT * FROM mailboxes WHERE address = ?', address);
     if (!b) { log('info', 'mail_login_failed', { address, reason: 'unknown_address' }); await new Promise((r) => setTimeout(r, 150)); throw bad(); }
     const sub = await db.get('SELECT status FROM subscriptions WHERE user_id = ?', b.user_id);
-    if (b.provider_status === 'suspended' || (sub && ['suspended', 'cancelled'].includes(sub.status))) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda pour retrouver votre messagerie.', 'subscription_inactive');
+    if (b.provider_status === 'suspended' || (sub && ['suspended', 'cancelled'].includes(sub.status))) throw new HttpError(402, 'Votre abonnement email n’est plus actif. Réglez-le depuis votre espace Freda Workspace pour retrouver votre messagerie.', 'subscription_inactive');
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'Votre messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     const t0 = Date.now();
     const reserved = f && t0 - f.t < LOCK_MS ? f.n + 1 : 1;

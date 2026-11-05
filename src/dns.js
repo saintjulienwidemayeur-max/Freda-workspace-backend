@@ -3,7 +3,7 @@
  *  - La zone (dns_records) est la source de vérité de l'interface.
  *  - Domaines enregistrés chez nous (NameSilo, serveurs par défaut) : chaque modification est répercutée via l'API DNS NameSilo AVANT d'être enregistrée.
  *  - Domaines externes : « records » (le client ajoute les enregistrements chez son fournisseur, nous vérifions en DNS réel)
- *    ou « nameservers » (nécessite un DNS autoritaire Freda sur NAMESERVERS : non fourni par ce backend).
+ *    ou « nameservers » (nécessite un DNS autoritaire Freda Workspace sur NAMESERVERS : non fourni par ce backend).
  */
 const crypto = require('crypto');
 const dnsLib = require('dns');
@@ -106,7 +106,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     if (input.id) {
       existing = await db.get('SELECT * FROM dns_records WHERE id = ? AND domain_id = ?', String(input.id), d.id);
       if (!existing) throw new HttpError(404, 'Enregistrement introuvable.', 'not_found');
-      if (existing.managed && (existing.type !== v.type || existing.name !== v.name)) throw new HttpError(400, 'Les enregistrements email gérés par Freda ne peuvent pas changer de type ou de nom.', 'managed_record');
+      if (existing.managed && (existing.type !== v.type || existing.name !== v.name)) throw new HttpError(400, 'Les enregistrements email gérés par Freda Workspace ne peuvent pas changer de type ou de nom.', 'managed_record');
     } else if (count >= 100) throw new HttpError(400, 'Limite de 100 enregistrements atteinte.', 'limit');
     if (!existing && (await db.get('SELECT 1 FROM dns_records WHERE domain_id = ? AND type = ? AND name = ? AND value = ?', d.id, v.type, v.name, v.value))) throw new HttpError(409, 'Cet enregistrement existe déjà.', 'duplicate');
     let providerId = existing ? existing.provider_id : '';
@@ -220,7 +220,7 @@ function createDns({ cfg, db, registrar, log, resolve = defaultResolve }) {
     const missing = [];
     try {
       if (d.dns_mode === 'nameservers') {
-        if (cfg.namesilo.nameservers.length < 2) throw new HttpError(409, 'Les serveurs de noms Freda ne sont pas encore disponibles. Choisissez « Garder mon DNS actuel ».', 'nameservers_unavailable');
+        if (cfg.namesilo.nameservers.length < 2) throw new HttpError(409, 'Les serveurs de noms Freda Workspace ne sont pas encore disponibles. Choisissez « Garder mon DNS actuel ».', 'nameservers_unavailable');
         const ns = (await resolve(ip, d.name, 'NS')).map((x) => x.toLowerCase().replace(/\.$/, ''));
         for (const want of cfg.namesilo.nameservers) if (!ns.includes(want.toLowerCase())) missing.push('NS ' + want);
       } else {
