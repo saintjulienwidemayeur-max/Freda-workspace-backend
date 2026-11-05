@@ -77,6 +77,8 @@ function loadConfig(env = process.env) {
       sessionDays: Number(env.MAIL_SESSION_DAYS) || 30,
     },
     imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
+    // Passerelle WebSocket de la version web : destinations FIXES (jamais choisies par le client)
+    tunnel: { smtpHost: env.SMTP_HOST || 'smtp.purelymail.com', smtpPort: Number(env.SMTP_PORT) || 465, smtpSecure: env.SMTP_SECURE !== 'false' },
     purelymail: { apiKey: env.PURELYMAIL_API_KEY || '', baseUrl: env.PURELYMAIL_BASE_URL || 'https://purelymail.com/api/v0', suspendMode: env.MAIL_SUSPEND_MODE === 'password' ? 'password' : 'rename' },
     dns: { resolvers: list(env.DNS_RESOLVERS, '8.8.8.8,1.1.1.1,9.9.9.9,208.67.222.222') },
     // Marque blanche DNS (facultatif) : domaine de VOTRE zone qui relaie les enregistrements DKIM/SPF/DMARC vers Purelymail (voir README). Vide = enregistrements Purelymail directs.

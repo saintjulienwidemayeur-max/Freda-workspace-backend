@@ -14,6 +14,7 @@ const { createDomainCatalog } = require('./src/domains');
 const { createDns } = require('./src/dns');
 const { createMail } = require('./src/mail');
 const { createVault } = require('./src/vault');
+const { createMailTunnel } = require('./src/mail-tunnel');
 const { createSubscription } = require('./src/subscription');
 const { verifySignature } = require('./src/stripe');
 const { createPush } = require('./src/push');
@@ -343,6 +344,15 @@ function createApp(deps) {
     }
   });
   server.app = { db, registrar, mailer, orders, jobs, dns, mail, accounts, alert, push };
+  // Version web (PWA) : tunnel WebSocket vers IMAP / SMTP (voir src/mail-tunnel.js)
+  const tunnel = createMailTunnel({ cfg, authenticateMailbox, log: logger });
+  server.on('upgrade', (req, socket, head) => {
+    const hops = Math.max(0, Number(process.env.TRUSTED_PROXY_HOPS ?? 1));
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const ip = (hops > 0 && xff.length ? xff[Math.max(0, xff.length - hops)] : '') || req.socket.remoteAddress || '';
+    if (!tunnel.handleUpgrade(req, socket, head, ip)) { socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); socket.destroy(); }
+  });
+  server.on('close', () => tunnel.close());
   return server;
 }
 
