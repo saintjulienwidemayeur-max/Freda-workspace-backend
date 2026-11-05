@@ -66,7 +66,7 @@ test('carte enregistrée : second achat sans action du client (off_session), pui
   const second = await (await checkout(t, { domains: ['deux.com'], methodId })).json();
   assert.strictEqual(second.status, 'succeeded', 'débité immédiatement');
   const pi = t.stripe.calls.find((x) => x.path === '/v1/payment_intents');
-  assert.deepStrictEqual([pi.f.off_session, pi.f.confirm, pi.f.amount, pi.f.currency], ['true', 'true', '1299', 'usd']);
+  assert.deepStrictEqual([pi.f.off_session, pi.f.confirm, pi.f.amount, pi.f.currency], ['true', 'true', '1384', 'usd']);
   assert.strictEqual(pi.idem, 'pi-' + second.reference);
   t.stState.authRequired = true;
   const third = await (await checkout(t, { domains: ['trois.com'], methodId })).json();
@@ -357,4 +357,13 @@ test('configuration : clé publique invalide, secrète collée par erreur, mode 
   assert.ok(errs({ STRIPE_JS_URL: 'https://evil.example/stripe.js' }).some((e) => /STRIPE_JS_URL/.test(e)));
   assert.deepStrictEqual(errs({ STRIPE_PUBLISHABLE_KEY: 'pk_live_x', STRIPE_SECRET_KEY: 'sk_live_y', STRIPE_WEBHOOK_SECRET: 'w' }), []);
   assert.strictEqual(loadConfig({ ...base, STRIPE_PUBLISHABLE_KEY: 'pk_live_x', STRIPE_UI_MODE: 'hosted' }).payments.stripe.uiMode, 'hosted', 'repli volontaire sur la page hébergée');
+});
+
+test('frais de traitement : carte 3,5 % + 0,40 $, MonCash / NatCash 6 %', () => {
+  const { cardFee, mobileFee } = require('../src/fees');
+  assert.strictEqual(cardFee(12.99), 0.85);
+  assert.strictEqual(cardFee(100), 3.9);
+  assert.strictEqual(mobileFee(100), 6);
+  assert.strictEqual(mobileFee(12.99), 0.78);
+  assert.strictEqual(cardFee(0), 0);
 });

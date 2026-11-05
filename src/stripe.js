@@ -13,6 +13,7 @@
  */
 const crypto = require('crypto');
 const { HttpError } = require('./errors');
+const { cardFee } = require('./fees');
 
 class StripeError extends Error {
   constructor(status, err = {}) { super(err.message || 'Erreur Stripe'); this.name = 'StripeError'; this.status = status; this.code = err.code || ''; this.declineCode = err.decline_code || ''; this.type = err.type || ''; this.paymentIntent = err.payment_intent || null; }
@@ -97,7 +98,7 @@ function createStripe({ cfg, db, log }) {
       // le montant et le pays du client. Seule la CARTE est enregistrée pour les prélèvements automatiques (les autres moyens ne servent qu'à ce paiement).
       mode: 'payment', customer, client_reference_id: reference,
       ...(cfg.payments.stripe.paymentMethodConfig ? { payment_method_configuration: cfg.payments.stripe.paymentMethodConfig } : {}),
-      line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: cents(amount), product_data: { name: label || 'Freda Workspace' } } }],
+      line_items: [{ quantity: 1, price_data: { currency: 'usd', unit_amount: cents(amount), product_data: { name: label || 'Freda Workspace' } } }, { quantity: 1, price_data: { currency: 'usd', unit_amount: cents(cardFee(amount)), product_data: { name: 'Frais de traitement du paiement (3,5 % + 0,40 $)' } } }],
       payment_method_options: { card: { setup_future_usage: 'off_session' } },
       payment_intent_data: { metadata: { reference } },
       metadata: { reference },
@@ -106,8 +107,8 @@ function createStripe({ cfg, db, log }) {
         : { success_url: back('success'), cancel_url: back('cancelled') }),
       expires_at: Math.floor(Date.now() / 1000) + 2 * 3600,
     }, { idem: 'cs-' + reference });
-    if (embedded()) return { status: 'pending', providerRef: s.id, embedded: embeddedInfo(s.client_secret), amountCents: cents(amount) };
-    return { status: 'pending', providerRef: s.id, redirectUrl: s.url, amountCents: cents(amount) };
+    if (embedded()) return { status: 'pending', providerRef: s.id, embedded: embeddedInfo(s.client_secret), amountCents: cents(amount) + cents(cardFee(amount)) };
+    return { status: 'pending', providerRef: s.id, redirectUrl: s.url, amountCents: cents(amount) + cents(cardFee(amount)) };
   }
 
   /** Reprise d'un paiement intégré fermé par erreur : le client_secret d'une session encore ouverte est relu chez Stripe (jamais stocké chez nous). */
@@ -123,7 +124,7 @@ function createStripe({ cfg, db, log }) {
     if (!m) throw new HttpError(404, 'Carte enregistrée introuvable.', 'not_found');
     const customer = await customerFor(userId);
     try {
-      const pi = await api('POST', '/v1/payment_intents', { amount: cents(amount), currency: 'usd', customer, payment_method: m.stripe_pm, off_session: true, confirm: true, description: label, metadata: { reference } }, { idem: 'pi-' + reference });
+      const pi = await api('POST', '/v1/payment_intents', { amount: cents(amount) + cents(cardFee(amount)), currency: 'usd', customer, payment_method: m.stripe_pm, off_session: true, confirm: true, description: label, metadata: { reference } }, { idem: 'pi-' + reference });
       if (pi.status === 'succeeded') return { status: 'paid', providerRef: pi.id, amountCents: pi.amount_received || pi.amount };
       throw new StripeError(402, { code: 'requires_action', message: 'Authentification de la banque requise.' });
     } catch (e) {
