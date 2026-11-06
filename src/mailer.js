@@ -65,14 +65,14 @@ ${content}
 /** E-mails transactionnels : « console » (développement/tests, garde les messages en mémoire) ou « brevo » (API HTTP v3, comme Freda Pay). */
 function createMailer(cfg, log) {
   const sent = [];
-  async function send({ to, subject, text, html }) {
+  async function send({ to, subject, text, html, category = 'Transactional' }) {
     const msg = { to, subject, text, html: html || brandedHtml({ subject, text }) };
     if (cfg.mailer.provider === 'brevo') {
       const res = await fetch(cfg.mailer.brevoUrl, {
         method: 'POST',
         headers: { 'api-key': cfg.mailer.brevoKey, 'Content-Type': 'application/json', accept: 'application/json' },
         body: JSON.stringify({ sender: { name: cfg.mailer.senderName, email: cfg.mailer.senderEmail }, to: [{ email: to }], subject, htmlContent: msg.html, textContent: text + '\n\n--\nFreda Workspace · une marque de Freda Pay LLC\nsupport@fredaworkspace.com', replyTo: { email: 'support@fredaworkspace.com', name: cfg.mailer.senderName },
-          headers: { 'X-Category': 'Transactional', 'X-Auto-Response-Suppress': 'All' } }),
+          headers: { 'X-Category': category, 'X-Auto-Response-Suppress': 'All' } }),
         signal: AbortSignal.timeout(15000),
       });
       if (!res.ok) { log('error', 'mail_failed', { status: res.status }); throw new Error('Envoi d’e-mail impossible.'); }
@@ -105,6 +105,7 @@ const templates = {
   balanceLow: (u, d) => ({ subject: d.days > 0 ? `Solde insuffisant : votre offre ${d.plan} se renouvelle dans ${d.days} jour${d.days > 1 ? 's' : ''}` : `Solde insuffisant : votre offre ${d.plan} est à régler`, text: `Bonjour ${nm(u)},\n\nVotre offre Freda Mail ${d.plan} (${money(d.price)}) ${d.days > 0 ? `se renouvelle dans ${d.days} jour${d.days > 1 ? 's' : ''}` : 'est arrivée à échéance'}, mais votre solde Freda Workspace n'est que de ${money(d.balance)}.\nIl manque ${money(d.missing)} (environ ${d.missingHtg} HTG).\n\nAjoutez de l'argent à votre solde avec MonCash ou NatCash :\n${d.link}\n\nDès que le solde suffit, l'offre est renouvelée automatiquement. Sans paiement, vos boîtes mail seront suspendues (vos messages sont conservés).\nFreda Workspace` }),
   topupReceipt: (u, d) => ({ subject: `Recharge reçue : ${money(d.amount)}`, text: `Bonjour ${nm(u)},\n\nVotre solde Freda Workspace a été rechargé de ${money(d.amount)} (référence ${d.reference}). Nouveau solde : ${money(d.balance)}.\nVos offres et renouvellements seront payés automatiquement avec ce solde.\n${d.link}\n\nFreda Workspace` }),
   paidFromBalance: (u, d) => ({ subject: `${d.label} payé avec votre solde`, text: `Bonjour ${nm(u)},\n\n${d.label} (${money(d.amount)}) a été payé avec votre solde. Solde restant : ${money(d.balance)}.\n${d.link}\n\nFreda Workspace` }),
+  planGift: (u, d) => ({ subject: `Une offre Freda Mail vous est offerte`, text: `Bonjour ${nm(u)},\n\nNous vous offrons l'offre Freda Mail ${d.plan} pour ${d.months} mois, jusqu'au ${d.endsOn}${d.mailboxes === null ? ' (boîtes illimitées)' : d.mailboxes ? ` (${d.mailboxes} boîte${d.mailboxes > 1 ? 's' : ''})` : ''}. Aucun paiement n'est demandé.\nÀ la fin de cette période, l'offre s'arrête sans frais ; pour continuer, vous pourrez la renouveler depuis votre espace.\n${d.link}\n\nFreda Workspace` }),
   renewalFailed: (u, name) => ({ subject: `Le domaine ${name} n'a pas pu être renouvelé`, text: `Bonjour ${nm(u)},\n\nVotre paiement est bien reçu mais le renouvellement de ${name} a échoué. Notre équipe a été alertée et vous contacte rapidement.\nFreda Workspace` }),
 };
 module.exports = { createMailer, templates, nm };
