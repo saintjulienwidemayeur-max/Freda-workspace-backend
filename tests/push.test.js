@@ -41,7 +41,7 @@ test('session de boîte : le jeton renvoyé par /api/mail/login n’ouvre QUE le
   const t = await withPush();
   assert.ok(t.token);
   assert.strictEqual((await t.mb('/api/mail/push')).status, 200);
-  assert.deepStrictEqual(await j(await t.mb('/api/mail/push')), { ios: true, android: true, devices: 0 });
+  assert.deepStrictEqual(await j(await t.mb('/api/mail/push')), { ios: true, android: true, web: false, vapidPublicKey: '', devices: 0 });
   assert.strictEqual((await t.api('/api/mail/push')).status, 401, 'sans jeton');
   assert.strictEqual((await t.mb('/api/mail/push', {}, t.token.slice(0, -3) + 'abc')).status, 401, 'falsifié');
   assert.strictEqual((await t.api('/api/mail/push', { headers: { 'X-Demo-User': 'paul@example.com' } })).status, 401, 'session de compte refusée sur une route de boîte');
@@ -67,7 +67,7 @@ test('enregistrement : plateforme et jeton validés ; plateforme non configurée
   t.push.stop();
   const none = await withPush({ senders: { ios: null, android: null } });
   assert.strictEqual((await none.reg({ platform: 'ios', token: IOS })).status, 503);
-  assert.deepStrictEqual(await j(await none.mb('/api/mail/push')), { ios: false, android: false, devices: 0 });
+  assert.deepStrictEqual(await j(await none.mb('/api/mail/push')), { ios: false, android: false, web: false, vapidPublicKey: '', devices: 0 });
   none.push.stop();
 });
 

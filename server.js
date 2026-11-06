@@ -231,7 +231,7 @@ function createApp(deps) {
   route('POST', '/api/mail/login', async (c) => { limit(L.auth, c.ip); return await mail.appLogin(await c.body(2048)); });
   /* Notifications push : session de BOÎTE (jeton renvoyé par /api/mail/login), jamais de session de compte */
   const mbx = { mailbox: true };
-  route('GET', '/api/mail/push', async (c) => ({ ios: push.enabled('ios'), android: push.enabled('android'), devices: (await db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', c.mailbox.id)).n }), mbx);
+  route('GET', '/api/mail/push', async (c) => ({ ios: push.enabled('ios'), android: push.enabled('android'), web: push.enabled('web'), vapidPublicKey: push.enabled('web') ? cfg.push.web.publicKey : '', devices: (await db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', c.mailbox.id)).n }), mbx);
   route('POST', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.register(c.mailbox, await c.body(4096)); }, mbx);
   route('DELETE', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.unregister(c.mailbox, c.url.searchParams.get('token') || (await c.body(4096)).token); }, mbx);
   /* Photos de profil : visibles seulement par les utilisateurs connectés de l'application (session de boîte) */

@@ -74,6 +74,7 @@ function loadConfig(env = process.env) {
       apns: { key: pem(env.APNS_KEY), keyId: env.APNS_KEY_ID || '', teamId: env.APNS_TEAM_ID || '', bundleId: env.APNS_BUNDLE_ID || '',
         baseUrl: env.APNS_BASE_URL || (env.APNS_ENV === 'sandbox' ? 'https://api.sandbox.push.apple.com' : 'https://api.push.apple.com') },
       fcm: { serviceAccount: json(env.FCM_SERVICE_ACCOUNT), baseUrl: env.FCM_BASE_URL || 'https://fcm.googleapis.com' },
+      web: { publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || 'mailto:support@fredaworkspace.com' },   // Web Push (navigateur) : paire de clés VAPID, voir scripts/generate-vapid.js
       sessionDays: Number(env.MAIL_SESSION_DAYS) || 30,
     },
     imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
@@ -99,7 +100,7 @@ function integrationSummary(cfg) {
     stripeSecretKey: !!s.secretKey, stripeWebhookSecret: !!s.webhookSecret, stripePublishableKey: !!s.publishableKey, stripeUiMode: s.secretKey ? s.uiMode : null,
     brevo: !!cfg.mailer.brevoKey, mailer: cfg.mailer.provider, purelymail: !!cfg.purelymail.apiKey,
     google: !!(cfg.google.clientId && cfg.google.clientSecret), alertWebhook: !!cfg.alerts.webhookUrl,
-    apns: !!cfg.push.apns.key, fcm: !!cfg.push.fcm.serviceAccount, appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, allowedOrigins: cfg.allowedOrigins.length, keepAlive: !!cfg.keepAlive.url,
+    apns: !!cfg.push.apns.key, fcm: !!cfg.push.fcm.serviceAccount, webPush: !!(cfg.push.web.publicKey && cfg.push.web.privateKey), appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, allowedOrigins: cfg.allowedOrigins.length, keepAlive: !!cfg.keepAlive.url,
   };
 }
 
@@ -132,7 +133,10 @@ function assertSafe(cfg) {
   const { apns, fcm } = cfg.push;
   if ((apns.key || apns.keyId || apns.teamId || apns.bundleId) && !(apns.key && apns.keyId && apns.teamId && apns.bundleId)) errors.push('APNS_KEY, APNS_KEY_ID, APNS_TEAM_ID et APNS_BUNDLE_ID vont ensemble (notifications iPhone).');
   if (fcm.serviceAccount && (fcm.serviceAccount.invalid || !fcm.serviceAccount.private_key || !fcm.serviceAccount.client_email || !fcm.serviceAccount.project_id)) errors.push('FCM_SERVICE_ACCOUNT invalide (JSON de compte de service Firebase avec private_key, client_email, project_id).');
-  if ((cfg.push.apns.key || cfg.push.fcm.serviceAccount) && !cfg.purelymail.apiKey) errors.push('Les notifications push exigent PURELYMAIL_API_KEY (identifiant de surveillance par boîte).');
+  const wp = cfg.push.web;
+  if ((wp.publicKey || wp.privateKey) && !require('./webpush').vapidKeysValid(wp.publicKey, wp.privateKey)) errors.push('VAPID_PUBLIC_KEY et VAPID_PRIVATE_KEY doivent former une paire valide (base64url, 65 et 32 octets) : générez-la avec « node scripts/generate-vapid.js ».');
+  if ((wp.publicKey || wp.privateKey) && !/^(mailto:[^\s@]+@[^\s@]+|https:\/\/\S+)$/.test(wp.subject)) errors.push('VAPID_SUBJECT invalide (mailto:adresse ou https://…).');
+  if ((cfg.push.apns.key || cfg.push.fcm.serviceAccount || wp.publicKey) && !cfg.purelymail.apiKey) errors.push('Les notifications push exigent PURELYMAIL_API_KEY (identifiant de surveillance par boîte).');
   if (cfg.mailer.provider === 'brevo' && !cfg.mailer.brevoKey) errors.push('BREVO_API_KEY requise avec MAILER=brevo.');
   if (cfg.nodeEnv === 'production' && cfg.mailer.provider === 'console') errors.push('MAILER=console en production : aucun e-mail (reçus, réinitialisation de mot de passe) ne partirait.');
   if (cfg.mailDns.brandDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(cfg.mailDns.brandDomain)) errors.push('MAIL_DNS_BRAND_DOMAIN invalide (ex. fredaworkspace.com).');
