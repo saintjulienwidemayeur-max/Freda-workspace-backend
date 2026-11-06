@@ -7,7 +7,7 @@ const { createClient } = require('./src/namesilo');
 const { createPriceBook } = require('./src/pricing');
 const { createPayments } = require('./src/payments');
 const { createMailboxAuthenticator, createAuthenticator } = require('./src/auth');
-const { createMailer } = require('./src/mailer');
+const { createMailer, templates } = require('./src/mailer');
 const { createAlerts } = require('./src/alerts');
 const { createAccounts } = require('./src/accounts');
 const { createDomainCatalog } = require('./src/domains');
@@ -26,6 +26,7 @@ const { createJobs } = require('./src/jobs');
 const { createWorkspace } = require('./src/workspace');
 const { createDomainSettings } = require('./src/domain-settings');
 const { createOverview } = require('./src/admin-overview');
+const { createAdminTools } = require('./src/admin-tools');
 const { createBalance } = require('./src/balance');
 const { createPlans } = require('./src/plans');
 
@@ -82,6 +83,7 @@ function createApp(deps) {
   const authenticateMailbox = createMailboxAuthenticator(cfg, db);
   const pushSenders = deps.pushSenders || createSenders(cfg);
   const push = createPush({ cfg, db, log: logger, vault, mail, senders: pushSenders, debounceMs: deps.pushDebounceMs });
+  const adminTools = createAdminTools({ cfg, db, mail, mailer, log: logger, templates });
   const overview = createOverview({ cfg, db, payments, mail, senders: pushSenders, balance });
 
   const photos = createPhotos({ db });
@@ -252,6 +254,15 @@ function createApp(deps) {
   route('POST', '/api/admin/jobs/run', async () => jobs.run(), admin);
   route('GET', '/api/admin/brand-dns', async () => dns.brandStatus(), admin);   // marque blanche DNS : vos relais existent-ils ? (vue détaillée)
   route('GET', '/api/admin/overview', async (c) => overview.overview(c.url.searchParams.get('days')), admin);   // tableau de bord administrateur
+  /* offrir une offre Freda Mail (sans paiement) et annonces e-mail */
+  route('GET', '/api/admin/customers', async (c) => adminTools.customers(c.url.searchParams.get('q')), admin);
+  route('GET', '/api/admin/grants', async () => ({ ...(await adminTools.grants()), plans: adminTools.plansView(), maxMonths: adminTools.maxMonths }), admin);
+  route('POST', '/api/admin/grants', async (c) => adminTools.grant(await c.body()), admin);
+  route('GET', '/api/admin/announcements', async () => adminTools.announcements(), admin);
+  route('GET', '/api/admin/announcements/audience', async (c) => adminTools.audienceCount(c.url.searchParams.get('audience')), admin);
+  route('POST', '/api/admin/announcements/test', async (c) => adminTools.test(await c.body(64 * 1024)), admin);
+  route('POST', '/api/admin/announcements', async (c) => adminTools.create(await c.body(64 * 1024)), admin);
+  route('POST', '/api/admin/announcements/:id/resume', async (c, p) => adminTools.resume(p[0], await c.body()), admin);
   route('GET', '/api/admin/domain-prices', async () => catalog.priceTable(), admin);
   /* prix mensuels des offres (Starter, Business, Enterprise) */
   route('GET', '/api/admin/plans', async () => plans.view(), admin);
