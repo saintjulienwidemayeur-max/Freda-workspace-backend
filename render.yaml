@@ -73,5 +73,9 @@ services:
         sync: false
       - key: FCM_SERVICE_ACCOUNT
         sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false          # Web Push (version web de Freda Mail) : « node scripts/generate-vapid.js » ; la clé publique n'est pas secrète
+      - key: VAPID_PRIVATE_KEY
+        sync: false          # SECRET : ne jamais la publier
       - key: ALERT_WEBHOOK_URL
         sync: false

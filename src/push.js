@@ -1,5 +1,5 @@
 /**
- * Notifications push du courrier entrant (application iPhone / Android).
+ * Notifications push du courrier entrant (application iPhone / Android et version web / PWA).
  *
  * Pourquoi un service serveur : Apple a cassé IMAP IDLE en arrière-plan et Purelymail n'a pas le certificat Apple (doc Purelymail, FAQ) ; une app mobile
  * ne peut donc pas être prévenue d'un nouveau message sans nous. Principe :
@@ -17,6 +17,7 @@ const net = require('net');
 const tls = require('tls');
 const { HttpError } = require('./errors');
 const { previewText } = require('./mail-preview');
+const { canonicalSubscription } = require('./webpush');
 
 const sleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); t.unref && t.unref(); });
 const MAX_DEVICES = 20;
@@ -153,9 +154,10 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
   }
 
   async function register(b, { platform, token } = {}) {
-    if (!['ios', 'android'].includes(platform)) throw new HttpError(400, 'Plateforme inconnue (ios ou android).', 'invalid_platform');
-    const t = String(token || '').trim();
-    if (!tokenOk[platform].test(t)) throw new HttpError(400, 'Jeton de notification invalide.', 'invalid_token');
+    if (!['ios', 'android', 'web'].includes(platform)) throw new HttpError(400, 'Plateforme inconnue (ios, android ou web).', 'invalid_platform');
+    // web : abonnement du navigateur { endpoint, keys } (objet ou chaîne JSON), enregistré sous forme canonique ; l'endpoint doit être un vrai service de push (https)
+    const t = platform === 'web' ? canonicalSubscription(token) : String(token || '').trim();
+    if (platform === 'web' ? !t : !tokenOk[platform].test(t)) throw new HttpError(400, 'Jeton de notification invalide.', 'invalid_token');
     if (!enabled(platform)) throw new HttpError(503, 'Les notifications ne sont pas disponibles pour le moment.', 'push_not_configured');
     if (!mail.providerEnabled) throw new HttpError(503, 'La messagerie est en cours d’activation.', 'mailbox_not_ready');
     if (!(await db.get('SELECT 1 FROM push_devices WHERE mailbox_id = ? AND platform = ? AND token = ?', b.id, platform, t)) && (await db.get('SELECT COUNT(*) AS n FROM push_devices WHERE mailbox_id = ?', b.id)).n >= MAX_DEVICES) throw new HttpError(403, `Limite de ${MAX_DEVICES} appareils par boîte atteinte.`, 'device_limit');
@@ -170,7 +172,8 @@ function createPush({ cfg, db, log, vault, mail, senders, debounceMs = 1500 }) {
   }
 
   async function unregister(b, token) {
-    await db.run('DELETE FROM push_devices WHERE mailbox_id = ? AND token = ?', b.id, String(token || ''));
+    const t = canonicalSubscription(token) || String(token || '');   // abonnement web : comparé sous forme canonique
+    await db.run('DELETE FROM push_devices WHERE mailbox_id = ? AND token = ?', b.id, t);
     await reconcile();
     return { registered: false };
   }

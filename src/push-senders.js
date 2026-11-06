@@ -1,5 +1,5 @@
 /**
- * Envoi des notifications : APNs (iPhone, HTTP/2 + jeton JWT ES256) et FCM HTTP v1 (Android, OAuth2 par compte de service). Sans dépendance.
+ * Envoi des notifications : APNs (iPhone, HTTP/2 + jeton JWT ES256), FCM HTTP v1 (Android, OAuth2 par compte de service) et Web Push (navigateur, voir webpush.js). Sans dépendance.
  * Chaque envoi retourne { ok: true } ou { invalid: true } (jeton d'appareil mort : à supprimer) et lève une erreur pour toute autre panne.
  *  - APNs : https://developer.apple.com/documentation/usernotifications/sending-notification-requests-to-apns
  *           POST /3/device/<jeton>, en-têtes authorization: bearer <jwt>, apns-push-type: alert, apns-topic: <bundle id> ; 410 / BadDeviceToken = jeton mort.
@@ -8,6 +8,7 @@
  */
 const crypto = require('crypto');
 const http2 = require('http2');
+const { createWebPush, vapidKeysValid } = require('./webpush');
 
 const b64u = (b) => Buffer.from(b).toString('base64url');
 const clip = (s, n) => (String(s).length > n ? String(s).slice(0, n - 1) + '…' : String(s));
@@ -98,8 +99,8 @@ function createFcm(cfg) {
 }
 
 function createSenders(cfg) {
-  const a = cfg.push.apns, f = cfg.push.fcm.serviceAccount;
-  return { ios: a.key && a.keyId && a.teamId && a.bundleId ? createApns(cfg) : null, android: f && f.private_key ? createFcm(cfg) : null };
+  const a = cfg.push.apns, f = cfg.push.fcm.serviceAccount, w = cfg.push.web;
+  return { ios: a.key && a.keyId && a.teamId && a.bundleId ? createApns(cfg) : null, android: f && f.private_key ? createFcm(cfg) : null, web: vapidKeysValid(w.publicKey, w.privateKey) ? createWebPush(cfg) : null };
 }
 
 module.exports = { createApns, createFcm, createSenders };

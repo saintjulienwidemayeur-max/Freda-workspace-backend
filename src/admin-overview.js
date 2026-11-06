@@ -44,7 +44,7 @@ function createOverview({ cfg, db, payments, mail, senders, balance, startedAt =
     const withinDays = expiring.filter((d) => d.expires_at <= in7).length;
     const system = {
       database: cfg.databaseUrl ? 'postgresql' : 'pglite', nodeEnv: cfg.nodeEnv, registrar: cfg.namesilo.mode, payments: payments.name, paymentsMode: payments.name === 'issuing' ? (/^sk_live_/.test(cfg.payments.issuing.secretKey) ? 'live' : 'test') : null, issuingWebhook: payments.name === 'issuing' ? !!cfg.payments.issuing.webhookSecret : null, cards: !!payments.cards,
-      mailer: cfg.mailer.provider, mailProvider: !!mail.providerEnabled, push: { ios: !!(senders && senders.ios), android: !!(senders && senders.android) },
+      mailer: cfg.mailer.provider, mailProvider: !!mail.providerEnabled, push: { ios: !!(senders && senders.ios), android: !!(senders && senders.android), web: !!(senders && senders.web) },
       keepAlive: !!cfg.keepAlive.url, uptimeSeconds: Math.round((now - startedAt) / 1000), startedAt: iso(startedAt), memoryMb: Math.round(process.memoryUsage().rss / 1048576),
     };
     const alerts = [];
@@ -56,7 +56,7 @@ function createOverview({ cfg, db, payments, mail, senders, balance, startedAt =
     if (system.payments === 'issuing' && system.paymentsMode === 'test') add('warn', 'issuing_sandbox', 'Freda Pay Issuing en mode Sandbox (clé sk_test_…) : MonCash et NatCash n’encaissent pas de vrai argent.');
     if (system.payments === 'issuing' && !system.issuingWebhook) add('info', 'issuing_no_webhook', 'Webhook Freda Pay Issuing non configuré : les paiements sont confirmés par vérification périodique (quelques minutes de retard possibles).');
     if (!system.mailProvider) add('error', 'mail_provider_off', 'Purelymail n’est pas configuré : les boîtes ne peuvent pas être créées.');
-    if (!system.push.android && !system.push.ios) add('warn', 'push_off', 'Notifications push désactivées (ni FCM ni APNs).');
+    if (!system.push.android && !system.push.ios && !system.push.web) add('warn', 'push_off', 'Notifications push désactivées (ni FCM, ni APNs, ni Web Push).');
     if (!system.keepAlive) add('info', 'keepalive_off', 'Auto-ping désactivé : le serveur gratuit Render s’endort après 15 minutes sans visite.');
     if ((orderCount.needs_attention || 0) > 0) add('error', 'orders_need_attention', `${orderCount.needs_attention} commande(s) demandent une intervention.`);
     if (withinDays > 0) add('warn', 'domains_expiring', `${withinDays} domaine(s) expirent dans moins de 7 jours.`);
