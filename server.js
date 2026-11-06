@@ -154,6 +154,11 @@ function createApp(deps) {
       if (ref) await orders.confirmByReference(ref);   // revérifie chez Stripe (un paiement différé encore « unpaid » reste en attente) ; une erreur -> 500 -> Stripe réessaie
     } else if (event.type === 'checkout.session.async_payment_failed') {
       if (ref) await orders.failByReference(ref, 'Le paiement a été refusé. Aucun montant n’a été débité : réessayez avec un autre moyen de paiement.');
+    } else if (event.type === 'charge.dispute.created' || event.type === 'charge.refunded') {
+      // litige ou remboursement chez Stripe : une recharge par carte est reprise du solde (sinon : achats gardés, argent perdu)
+      const dispute = event.type === 'charge.dispute.created';
+      const reference = (obj.metadata && obj.metadata.reference) || (obj.payment_intent ? await payments.stripe.referenceOf(String(obj.payment_intent)) : '');   // erreur -> 500 -> Stripe réessaie
+      if (reference) await orders.reverseByReference(reference, dispute ? { kind: 'dispute' } : { kind: 'refund', refundedCents: Number(obj.amount_refunded) || 0, totalCents: Number(obj.amount) || 0 });
     }
     return { received: true };
   });

@@ -31,6 +31,26 @@ function createBalance({ db }) {
       return res.changes > 0;
     });
   }
+  /**
+   * Annulation d'une recharge payée par carte (litige / remboursement chez Stripe). Une seule écriture « card_reversal » par commande, qui ne fait que
+   * MONTER (un second événement, ou un remboursement partiel suivi d'un litige, n'enlève jamais deux fois la même somme). Le solde peut devenir négatif :
+   * plus aucun achat avec le solde n'est alors possible tant qu'il n'est pas rétabli.
+   */
+  async function reverse(userId, amount, { orderId, note = '' }) {
+    amount = r2(amount);
+    if (!(amount > 0) || !orderId) return false;
+    return await db.tx(async () => {
+      await db.get('SELECT id FROM users WHERE id = ? FOR UPDATE', userId);
+      const cur = await db.get("SELECT id, amount FROM balance_entries WHERE order_id = ? AND kind = 'card_reversal'", orderId);
+      if (cur) {
+        if (-Number(cur.amount) >= amount - 0.00001) return false;
+        await db.run('UPDATE balance_entries SET amount = ?, note = ? WHERE id = ?', -amount, note, cur.id);
+        return true;
+      }
+      const res = await db.run("INSERT INTO balance_entries (id, user_id, amount, kind, order_id, note, created_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING", id(), userId, -amount, 'card_reversal', orderId, note, new Date().toISOString());
+      return res.changes > 0;
+    });
+  }
   async function entries(userId, limit = 30) {
     return (await db.all('SELECT id, amount, kind, note, created_at FROM balance_entries WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?', userId, limit))
       .map((e) => ({ id: e.id, amount: r2(e.amount), kind: e.kind, note: e.note, at: e.created_at }));
@@ -41,7 +61,7 @@ function createBalance({ db }) {
     const r = await db.get('SELECT COALESCE(SUM(b), 0) AS s, COUNT(*) AS n FROM (SELECT SUM(amount) AS b FROM balance_entries GROUP BY user_id HAVING SUM(amount) > 0.005) t');
     return { total: r2(Number(r.s) || 0), customers: Number(r.n) || 0 };
   }
-  return { get, credit, debit, entries, autoPay, setAutoPay, total };
+  return { get, credit, debit, reverse, entries, autoPay, setAutoPay, total };
 }
 
 module.exports = { createBalance };
