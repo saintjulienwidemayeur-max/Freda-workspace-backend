@@ -27,9 +27,33 @@ class NameSiloError extends Error {
 const OK_CODES = new Set([300, 301, 302]);   // 300 = succès ; 301 = serveurs de noms NameSilo utilisés ; 302 = contact par défaut utilisé
 const asArray = (v) => (v === undefined || v === null || v === '' ? [] : Array.isArray(v) ? v : [v]);
 
+const READ_OPS = new Set(['checkRegisterAvailability', 'getPrices', 'getAccountBalance']);   // lectures : on peut les suspendre sans risque (jamais un achat)
+
 function createClient(cfg, fetchImpl = fetch) {
+  /* Anti-saturation : NameSilo répond « Misuse of API » (210) quand on l'appelle trop vite (constaté en production le 12 nov. 2026, après une rafale de recherches :
+     toutes les recherches ont ensuite échoué). On espace donc TOUS les appels (file unique) et, dès qu'un 210 arrive, on suspend les lectures un moment
+     au lieu de continuer à marteler l'API (ce qui prolongerait le blocage). Les achats ne sont jamais suspendus. */
+  const minGap = cfg.minIntervalMs === undefined ? 300 : cfg.minIntervalMs;
+  const cooldownMs = cfg.cooldownMs === undefined ? 30000 : cfg.cooldownMs;
+  let chain = Promise.resolve(), lastStart = 0, blockedUntil = 0;
+  const schedule = (fn) => {
+    const run = chain.then(async () => {
+      const wait = lastStart + minGap - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      lastStart = Date.now();
+      return fn();
+    });
+    chain = run.catch(() => {});
+    return run;
+  };
+
   /** Appelle une opération. La clé API n'apparaît jamais dans les erreurs ni les journaux. */
   async function call(operation, params = {}) {
+    if (READ_OPS.has(operation) && Date.now() < blockedUntil) throw new NameSiloError(210, 'suspendu un instant (trop de requêtes)', operation);
+    try { return await schedule(() => rawCall(operation, params)); }
+    catch (e) { if (e.code === 210 || e.code === '210') blockedUntil = Date.now() + cooldownMs; throw e; }
+  }
+  async function rawCall(operation, params = {}) {
     const url = new URL(`${cfg.baseUrl.replace(/\/$/, '')}/${operation}`);
     const qs = new URLSearchParams({ version: '1', type: 'json', key: cfg.key });
     Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && (v !== '' || k === 'rrhost')) qs.set(k, String(v)); });   // rrhost vide = racine du domaine (paramètre présent mais vide)

@@ -39,6 +39,8 @@ function loadConfig(env = process.env) {
       contactId: env.NAMESILO_CONTACT_ID || '',
       nameservers: list(env.NAMESERVERS, ''),   // serveurs de noms Freda Connect (≥ 2). Vide = serveurs NameSilo.
       timeoutMs: Number(env.NAMESILO_TIMEOUT_MS) || 20000,
+      minIntervalMs: env.NAMESILO_MIN_INTERVAL_MS === undefined || env.NAMESILO_MIN_INTERVAL_MS === '' ? 300 : Number(env.NAMESILO_MIN_INTERVAL_MS),   // espacement minimal entre deux appels NameSilo
+      cooldownMs: env.NAMESILO_COOLDOWN_MS === undefined || env.NAMESILO_COOLDOWN_MS === '' ? 30000 : Number(env.NAMESILO_COOLDOWN_MS),   // pause des lectures après une erreur 210
     },
     pricing: {
       markupPercent: Number(env.PRICE_MARKUP_PERCENT ?? 35),

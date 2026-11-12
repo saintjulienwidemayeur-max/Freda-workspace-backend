@@ -8,6 +8,27 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     try { return await priceBook.load(); }
     catch (e) { log('error', 'prices_failed', { code: e.code }); throw new HttpError(502, 'Les tarifs sont momentanément indisponibles.', 'registrar_error'); }
   }
+  /* Cache court des résultats de recherche (jamais utilisé pour un achat : devis et commande revérifient en direct).
+     Beaucoup de visiteurs cherchent les mêmes noms en même temps : on évite de rappeler NameSilo pour chacun. */
+  const CACHE_MS = cfg.searchCacheMs === undefined ? 45000 : cfg.searchCacheMs;
+  const seen = new Map();   // nom -> { kind: 'available' | 'unavailable' | 'invalid', item, exp }
+  async function cachedAvailability(names) {
+    const now = Date.now();
+    const out = { available: [], unavailable: [], invalid: [] };
+    const todo = [];
+    for (const n of names) {
+      const c = seen.get(n);
+      if (c && c.exp > now) out[c.kind].push(c.item); else todo.push(n);
+    }
+    if (todo.length) {
+      const r = await registrar.checkAvailability(todo);
+      const exp = Date.now() + CACHE_MS;
+      for (const kind of ['available', 'unavailable', 'invalid']) for (const item of r[kind]) { out[kind].push(item); seen.set(typeof item === 'string' ? item : item.domain, { kind, item, exp }); }
+      if (seen.size > 5000) for (const [k, v] of seen) if (v.exp <= now) seen.delete(k);
+    }
+    return out;
+  }
+
   /* Vendable : pas premium (prix imprévisible) et enregistrable pour 1 an (certaines extensions imposent une durée minimale > 1). */
   const sellable = (d) => !d.premium;   // NameSilo renvoie duration=10 (durée maximale) pour tous les domaines : ce n'est pas la durée minimale, on ne filtre pas dessus
 
@@ -37,7 +58,7 @@ function createDomainCatalog({ cfg, registrar, priceBook, alert, log = () => {} 
     const candidates = [...new Set([...wantTlds.map((t) => n.label + t), ...wantVariants.map((l) => l + '.com')])];
     let avail = { available: [], unavailable: [], invalid: [] };
     if (candidates.length) {
-      try { avail = await registrar.checkAvailability(candidates); }
+      try { avail = await cachedAvailability(candidates); }
       catch (e) { log('error', 'search_failed', { code: e.code, detail: e.detail }); throw new HttpError(502, 'La recherche est momentanément indisponible.', 'registrar_error'); }
     }
     const free = new Map(avail.available.filter(sellable).map((d) => [d.domain, d]));

@@ -267,3 +267,40 @@ test('recherche en deux temps : « main » = nom + .com/.net/.org en un seul app
   const dev = await (await t.api('/api/domains/search?q=rapide.io&part=main')).json();
   assert.strictEqual(dev.exact.domain, 'rapide.io', 'l’extension demandée passe en premier');
 });
+
+test('NameSilo « Misuse of API » (210) : les lectures sont suspendues un instant (pas de marteau), les achats ne le sont jamais', async () => {
+  const { createClient } = require('../src/namesilo');
+  const ops = [];
+  let misuse = true;
+  const fetchImpl = async (url) => {
+    ops.push(new URL(url).pathname.split('/').pop());
+    return misuse ? { ok: true, status: 200, json: async () => ({ reply: { code: 210, detail: 'Misuse of API' } }) } : { ok: true, status: 200, json: async () => ({ reply: { code: 300, available: [{ domain: 'a.com', price: 9, duration: 1 }] } }) };
+  };
+  const c = createClient({ baseUrl: 'http://x', key: 'k', minIntervalMs: 0, cooldownMs: 60000 }, fetchImpl);
+  await assert.rejects(c.checkAvailability(['a.com']), (e) => e.code === 210);
+  await assert.rejects(c.checkAvailability(['b.com']), (e) => e.code === 210);
+  assert.strictEqual(ops.length, 1, 'la 2e lecture ne doit pas appeler NameSilo');
+  misuse = false;
+  await c.lock('a.com').catch(() => {});   // une écriture part quand même
+  assert.ok(ops.length >= 2);
+});
+
+test('NameSilo : les appels sont espacés (file unique)', async () => {
+  const { createClient } = require('../src/namesilo');
+  const starts = [];
+  const fetchImpl = async () => { starts.push(Date.now()); return { ok: true, status: 200, json: async () => ({ reply: { code: 300, available: [] } }) }; };
+  const c = createClient({ baseUrl: 'http://x', key: 'k', minIntervalMs: 80 }, fetchImpl);
+  await Promise.all([c.checkAvailability(['a.com']), c.checkAvailability(['b.com']), c.checkAvailability(['c.com'])]);
+  assert.ok(starts[1] - starts[0] >= 70 && starts[2] - starts[1] >= 70, starts.join(','));
+});
+
+test('recherche : un nom déjà cherché récemment n’est pas redemandé à NameSilo', async () => {
+  const t = await setup();
+  const count = () => t.ns.calls.filter((c) => c.op === 'checkRegisterAvailability').length;
+  await t.api('/api/domains/search?q=pris&part=main');
+  const n1 = count();
+  assert.ok(n1 >= 1);
+  const r = await t.api('/api/domains/search?q=pris&part=main');
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(count(), n1);
+});
