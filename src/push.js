@@ -75,7 +75,7 @@ function watchMailbox({ imap, user, pass, getLastUid, setLastUid, onNew, onDenie
       const last = await getLastUid();
       if (last === null) return await setLastUid(uidnext - 1);                 // première connexion : on part de l'existant, sans notifier
       if (uidnext - 1 <= last) return;
-      const info = { count: uidnext - 1 - last };
+      const info = { count: uidnext - 1 - last, fromUid: last + 1, toUid: uidnext - 1 };
       if (preview) {
         try {
           const uid = uidnext - 1;

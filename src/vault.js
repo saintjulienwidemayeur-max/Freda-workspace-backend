@@ -17,6 +17,11 @@ function keyFrom(cfg) {
 function createVault(cfg) {
   const key = keyFrom(cfg);
   return {
+    /** Empreinte HMAC-SHA256 (hex) avec une sous-clé dérivée de DATA_KEY et du libellé : sert à ne conserver que l'empreinte des clés API (inutilisable sans DATA_KEY). */
+    mac(label, data) {
+      const sub = crypto.createHmac('sha256', key).update('freda-mac:' + label).digest();
+      return crypto.createHmac('sha256', sub).update(String(data)).digest('hex');
+    },
     encrypt(plain) {
       const iv = crypto.randomBytes(12);
       const c = crypto.createCipheriv('aes-256-gcm', key, iv);

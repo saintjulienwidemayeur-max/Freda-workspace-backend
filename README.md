@@ -167,3 +167,13 @@ Réglez dans Render : **Branch** = la branche à déployer (pas `main` si elle e
 | `PAYMENTS_PROVIDER=paym` + `PAYM_CLIENT_ID`, `PAYM_CLIENT_SECRET` | paiements via Pay'm (alternative) |
 | `APP_URL`, `API_URL`, `ALLOWED_ORIGINS` | URL du site, de l'API, origines autorisées (CORS) |
 **Instance d'essai avant Pay'm / Brevo** : `NODE_ENV=staging` (autorise paiements `demo` et e-mails en console ; `NAMESILO_MODE=dry-run`, aucun achat réel) + `DATABASE_URL`, `JWT_SECRET`, `NAMESILO_API_KEY`. Ne jamais l'ouvrir au public : en `staging`, toute commande est « payée ».
+
+## API publique pour agents IA (`/api/v1`) et webhooks
+
+Clés personnelles par boîte (lecture seule `read` ou lecture + envoi `read_send`), créées dans le webmail (Paramètres › Intégrations & API) :
+
+- `GET /api/v1/me`, `GET /api/v1/messages?unread=true`, `GET /api/v1/messages/{id}`, `PATCH /api/v1/messages/{id}`, `POST /api/v1/messages/send` (réponse rattachée au fil avec `reply_to_message_id` ou `thread_id`).
+- Documentation : `GET /api/v1/docs` (page) et `GET /api/v1/openapi.json` (OpenAPI 3).
+- Gestion des clés et du webhook (session de boîte uniquement, jamais une clé) : `/api/mail/api-keys`, `/api/mail/webhook`.
+- Sécurité : seule l'empreinte HMAC-SHA256 des clés est conservée (sous-clé de `DATA_KEY`) ; limites 60 requêtes/min/clé, 10 envois/min et `API_DAILY_SENDS` (200) par jour et par boîte ; webhooks https publics seulement (contrôle DNS à la connexion), signés `X-Freda-Signature` ; un changement de mot de passe de la boîte invalide clés et webhook existants.
+- Accès IMAP/SMTP par un mot de passe d'application Purelymail « Freda API » (un par boîte, chiffré, révoqué quand il n'y a plus ni clé ni webhook). Une seule instance du serveur (observateurs IMAP des webhooks en mémoire).
