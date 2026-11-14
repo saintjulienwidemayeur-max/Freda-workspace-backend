@@ -28,14 +28,14 @@ const user = (d, id, email = id + '@x.test') => d.run('INSERT INTO users (id, em
 
 test('pg : migrations appliquées, relance sans effet (table app_migrations), types numériques', async () => {
   await withDb(async (d) => {
-    assert.deepStrictEqual((await d.all('SELECT version FROM app_migrations ORDER BY version')).map((r) => r.version), ['001_init', '002_security', '003_supabase_hardening', '004_mailbox_photos', '005_balance', '006_settings', '007_user_token_revocation', '008_email_verification', '009_admin_tools']);
+    assert.deepStrictEqual((await d.all('SELECT version FROM app_migrations ORDER BY version')).map((r) => r.version), ['001_init', '002_security', '003_supabase_hardening', '004_mailbox_photos', '005_balance', '006_settings', '007_user_token_revocation', '008_email_verification', '009_admin_tools', '010_api_keys']);
     await user(d, 'u1');
     await d.run('INSERT INTO orders (id, user_id, reference, kind, status, amount, created_at, updated_at, last_check) VALUES (?,?,?,?,?,?,?,?,?)', 'o1', 'u1', 'R1', 'domain', 'x', 12.99, 'n', 'n', Date.now());
     const r = await d.get('SELECT last_check, amount, (SELECT COUNT(*) FROM orders) AS n, (SELECT SUM(amount) FROM orders) AS total FROM orders');
     assert.strictEqual(typeof r.last_check, 'number'); assert.ok(r.last_check > 1.7e12);
     assert.deepStrictEqual([r.amount, r.n, r.total], [12.99, 1, 12.99]);
   });
-  await withDb(async (again) => { assert.strictEqual((await again.get('SELECT COUNT(*) AS n FROM app_migrations')).n, 9, 'seconde instance : rien à refaire, pas de doublon'); });
+  await withDb(async (again) => { assert.strictEqual((await again.get('SELECT COUNT(*) AS n FROM app_migrations')).n, 10, 'seconde instance : rien à refaire, pas de doublon'); });
 });
 
 test('pg : transactions — annulation, imbriquées, et appels db.* faits dans la tx joints à SA connexion', async () => {

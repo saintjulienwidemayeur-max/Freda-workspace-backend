@@ -29,6 +29,11 @@ const { createOverview } = require('./src/admin-overview');
 const { createAdminTools } = require('./src/admin-tools');
 const { createBalance } = require('./src/balance');
 const { createPlans } = require('./src/plans');
+const { createApiKeys } = require('./src/api-keys');
+const { createGateway } = require('./src/mail-gateway');
+const { createApiV1 } = require('./src/api-v1');
+const { createWebhooks } = require('./src/webhooks');
+const { buildSpec, renderDocs } = require('./src/api-docs');
 
 const MAX_BODY = 32 * 1024;
 
@@ -83,6 +88,12 @@ function createApp(deps) {
   const authenticateMailbox = createMailboxAuthenticator(cfg, db);
   const pushSenders = deps.pushSenders || createSenders(cfg);
   const push = createPush({ cfg, db, log: logger, vault, mail, senders: pushSenders, debounceMs: deps.pushDebounceMs });
+  /* API publique /api/v1 (clés personnelles de boîte) et webhooks « nouveau message » : voir src/api-v1.js, src/webhooks.js */
+  const apiKeys = createApiKeys({ cfg, db, vault, mail, log: logger });
+  const gateway = deps.gateway || createGateway({ cfg, log: logger, tlsOptions: deps.gatewayTls });
+  const apiV1 = createApiV1({ cfg, db, keys: apiKeys, gateway, log: logger });
+  const webhooks = createWebhooks({ cfg, db, vault, keys: apiKeys, gateway, log: logger, allowPrivate: !!deps.webhookAllowPrivate, retryDelays: deps.webhookRetryDelays });
+  const apiSpec = buildSpec({ apiUrl: cfg.apiUrl, limits: apiV1.limits });
   const adminTools = createAdminTools({ cfg, db, mail, mailer, log: logger, templates });
   const overview = createOverview({ cfg, db, payments, mail, senders: pushSenders, balance });
 
@@ -91,7 +102,7 @@ function createApp(deps) {
   /** decodeURIComponent sans 500 : un pourcentage mal formé est une erreur 400. */
   const dec = (v) => { try { return decodeURIComponent(v); } catch (e) { throw new HttpError(400, 'Adresse de requête invalide.', 'bad_request'); } };
 
-  const L = { search: createLimiter(60, 60_000), auth: createLimiter(12, 60_000), buy: createLimiter(10, 60_000), write: createLimiter(120, 60_000), errors: createLimiter(20, 60_000) };
+  const L = { search: createLimiter(60, 60_000), auth: createLimiter(12, 60_000), buy: createLimiter(10, 60_000), write: createLimiter(120, 60_000), errors: createLimiter(20, 60_000), keys: createLimiter(20, 60_000) };
   const adminFails = createFailureLimiter(8, 10 * 60_000);   // 8 mauvais jetons admin par IP et par 10 minutes
 
   /* Table de routes : [méthode, motif, gestionnaire, options]. Les segments « :nom » ne contiennent pas de « / » (les noms de domaine contiennent des points). */
@@ -235,6 +246,23 @@ function createApp(deps) {
   route('POST', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.register(c.mailbox, await c.body(4096)); }, mbx);
   route('DELETE', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.unregister(c.mailbox, c.url.searchParams.get('token') || (await c.body(4096)).token); }, mbx);
   /* Photos de profil : visibles seulement par les utilisateurs connectés de l'application (session de boîte) */
+  /* Intégrations & API (paramètres du webmail) : session de BOÎTE uniquement, jamais une clé API (une clé volée ne peut ni créer d'autres clés ni rediriger le courrier) */
+  route('GET', '/api/mail/api-keys', async (c) => ({ keys: await apiKeys.list(c.mailbox), max: apiKeys.MAX_KEYS, scopes: apiKeys.SCOPES, docsUrl: cfg.apiUrl + '/api/v1/docs', apiUrl: cfg.apiUrl }), mbx);
+  route('POST', '/api/mail/api-keys', async (c) => { limit(L.keys, c.mailbox.id); return await apiKeys.create(c.mailbox, await c.body(2048)); }, mbx);
+  route('DELETE', '/api/mail/api-keys/:id', async (c, p) => { limit(L.write, c.mailbox.id); return await apiKeys.remove(c.mailbox, p[0]); }, mbx);
+  route('GET', '/api/mail/webhook', async (c) => await webhooks.get(c.mailbox), mbx);
+  route('PUT', '/api/mail/webhook', async (c) => { limit(L.keys, c.mailbox.id); return await webhooks.set(c.mailbox, await c.body(2048)); }, mbx);
+  route('POST', '/api/mail/webhook/secret', async (c) => { limit(L.keys, c.mailbox.id); return await webhooks.rotateSecret(c.mailbox); }, mbx);
+  route('POST', '/api/mail/webhook/test', async (c) => { limit(L.keys, c.mailbox.id); return await webhooks.test(c.mailbox); }, mbx);
+  route('DELETE', '/api/mail/webhook', async (c) => { limit(L.write, c.mailbox.id); return await webhooks.remove(c.mailbox); }, mbx);
+  /* API publique pour agents IA : Authorization: Bearer fmk_… */
+  route('GET', '/api/v1/openapi.json', async () => apiSpec);
+  route('GET', '/api/v1/docs', async () => ({ html: renderDocs(apiSpec) }));
+  route('GET', '/api/v1/me', async (c) => apiV1.me(c.api), { apiKey: 'read' });
+  route('GET', '/api/v1/messages', async (c) => apiV1.listMessages(c.api, c.url.searchParams), { apiKey: 'read' });
+  route('POST', '/api/v1/messages/send', async (c) => apiV1.send(c.api, await c.body(1_200_000), c.req.headers['idempotency-key']), { apiKey: 'read_send' });
+  route('GET', '/api/v1/messages/:id', async (c, p) => apiV1.getMessage(c.api, dec(p[0])), { apiKey: 'read' });
+  route('PATCH', '/api/v1/messages/:id', async (c, p) => apiV1.markRead(c.api, dec(p[0]), await c.body(2048)), { apiKey: 'read' });
   route('PUT', '/api/mail/photo', async (c) => { limit(L.write, c.mailbox.id); return await photos.save(c.mailbox, await c.raw(photos.MAX_BYTES + 1024)); }, mbx);
   route('DELETE', '/api/mail/photo', async (c) => { limit(L.write, c.mailbox.id); return await photos.remove(c.mailbox); }, mbx);
   route('POST', '/api/mail/photos', async (c) => { limit(L.search, c.mailbox.id); return await photos.lookup((await c.body(8192)).addresses); }, mbx);
@@ -329,11 +357,12 @@ function createApp(deps) {
     const xff = String(req.headers['x-forwarded-for'] || '').split(',').map((x) => x.trim()).filter(Boolean);
     const ip = (hops > 0 && xff.length ? xff[Math.max(0, xff.length - hops)] : '') || req.socket.remoteAddress || '';
     const url = new URL(req.url, 'http://x');
+    const extraHeaders = {};   // en-têtes ajoutés par les gestionnaires (X-RateLimit-*) ; renvoyés aussi sur les erreurs
     try {
       let matched = null, params = null;
       for (const r of routes) { if (r.method !== req.method) continue; const m = r.re.exec(url.pathname); if (m) { matched = r; params = m.slice(1); break; } }
       if (!matched) throw new HttpError(404, 'Route introuvable.', 'not_found');
-      const ctx = { req, url, ip, body: async (max) => (await readJson(req, max)), raw: async (max) => (await readRaw(req, max)) };
+      const ctx = { req, url, ip, headers: extraHeaders, body: async (max) => (await readJson(req, max)), raw: async (max) => (await readRaw(req, max)) };
       if (matched.opts.admin) {
         const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
         if (adminFails.blocked(ip)) throw new HttpError(429, 'Trop de tentatives. Réessayez plus tard.', 'rate_limited');
@@ -341,6 +370,7 @@ function createApp(deps) {
       }
       if (matched.opts.auth) ctx.user = await authenticate(req);
       if (matched.opts.mailbox) ctx.mailbox = await authenticateMailbox(req);
+      if (matched.opts.apiKey) ctx.api = await apiV1.authorize(req, ip, matched.opts.apiKey, ctx);
       const out = await matched.handler(ctx, params);
       if (out && out.binary) {
         const b = out.binary;
@@ -348,18 +378,22 @@ function createApp(deps) {
         res.writeHead(200, { 'Content-Type': b.type, 'Content-Length': b.data.length, ETag: b.etag, 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', ...cors });
         return res.end(b.data);
       }
+      if (out && out.html) {   // page de documentation : HTML statique généré côté serveur, aucun script ni ressource externe
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" });
+        return res.end(out.html);
+      }
       if (out && out.redirect) { res.writeHead(302, { Location: out.redirect, 'Cache-Control': 'no-store', ...cors }); return res.end(); }
-      return send(200, out);
+      return send(200, out, extraHeaders);
     } catch (e) {
       // violation de contrainte PostgreSQL (doublon, clé étrangère) : conflit métier, jamais une erreur interne
       if (!e.status && e.code === '23505') { e.status = 409; e.message = 'Cet élément existe déjà.'; e.code = 'duplicate'; }
       else if (!e.status && e.code === '23503') { e.status = 409; e.message = 'Cet élément est lié à d’autres données.'; e.code = 'conflict'; }
       const status = e.status || 500;
       if (status >= 500) logger('error', 'request_failed', { path: url.pathname, name: e.name, code: e.code, message: status === 500 ? e.message : undefined });
-      send(status, { message: status >= 500 && !(e instanceof HttpError) ? 'Erreur interne.' : e.message, code: e.code, ...(status < 500 && e.details ? { details: e.details } : {}) });
+      send(status, { message: status >= 500 && !(e instanceof HttpError) ? 'Erreur interne.' : e.message, code: e.code, ...(status < 500 && e.details ? { details: e.details } : {}) }, { ...extraHeaders, ...(e.headers || {}) });
     }
   });
-  server.app = { db, registrar, mailer, orders, jobs, dns, mail, accounts, alert, push };
+  server.app = { db, registrar, mailer, orders, jobs, dns, mail, accounts, alert, push, apiKeys, apiV1, webhooks, gateway };
   // Version web (PWA) : tunnel WebSocket vers IMAP / SMTP (voir src/mail-tunnel.js)
   const tunnel = createMailTunnel({ cfg, authenticateMailbox, log: logger });
   server.on('upgrade', (req, socket, head) => {
@@ -381,10 +415,11 @@ if (require.main === module) {
   app.app.db.ready.then(() => {
     app.app.jobs.start(); app.app.jobs.startSweeper();
     app.app.push.start().catch((e) => log('error', 'push_start_failed', { message: e.message }));
+    app.app.webhooks.start().catch((e) => log('error', 'webhooks_start_failed', { message: e.message }));
     keepAlive = startKeepAlive({ url: cfg.keepAlive.url, intervalMs: cfg.keepAlive.intervalMs, log });
     app.listen(cfg.port, () => log('info', 'api_started', { port: cfg.port, registrar: cfg.namesilo.mode, payments: cfg.payments.provider, mailer: cfg.mailer.provider, database: cfg.databaseUrl ? 'postgresql' : 'pglite', integrations: integrationSummary(cfg) }));
   }, (e) => { log('fatal', 'Base de données inaccessible ou migration échouée : ' + e.message); process.exit(1); });
-  const stop = () => { keepAlive.stop(); app.app.jobs.stop(); app.app.push.stop(); app.close(() => { app.app.db.close().finally(() => process.exit(0)); }); setTimeout(() => process.exit(0), 5000).unref(); };
+  const stop = () => { keepAlive.stop(); app.app.jobs.stop(); app.app.push.stop(); app.app.webhooks.stop(); app.close(() => { app.app.db.close().finally(() => process.exit(0)); }); setTimeout(() => process.exit(0), 5000).unref(); };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);
 }
 

@@ -79,6 +79,7 @@ function loadConfig(env = process.env) {
       web: { publicKey: env.VAPID_PUBLIC_KEY || '', privateKey: env.VAPID_PRIVATE_KEY || '', subject: env.VAPID_SUBJECT || 'mailto:support@fredaworkspace.com' },   // Web Push (navigateur) : paire de clés VAPID, voir scripts/generate-vapid.js
       sessionDays: Number(env.MAIL_SESSION_DAYS) || 30,
     },
+    api: { dailySends: Number(env.API_DAILY_SENDS) || 200 },   // envois par jour et par boîte via l'API publique /api/v1
     imap: { host: env.IMAP_HOST || 'imap.purelymail.com', port: Number(env.IMAP_PORT) || 993, secure: env.IMAP_SECURE !== 'false' },
     // Passerelle WebSocket de la version web : destinations FIXES (jamais choisies par le client)
     tunnel: { smtpHost: env.SMTP_HOST || 'smtp.purelymail.com', smtpPort: Number(env.SMTP_PORT) || 465, smtpSecure: env.SMTP_SECURE !== 'false' },
