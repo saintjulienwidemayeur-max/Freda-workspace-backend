@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const { HttpError } = require('./errors');
 const { templates } = require('./mailer');
 const { imapLogin } = require('./imap');
-const { issueMailboxToken } = require('./auth');
+const { issueMailboxToken, verifyPassword } = require('./auth');
 
 const LOCAL = /^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
 /** Mots de passe trop courants refusés (le reste est laissé libre : une phrase de passe simple vaut mieux qu'un code compliqué qu'on note ou qu'on se trompe à saisir). */
@@ -72,7 +72,7 @@ function createPurelymail(cfg, log) {
 
 function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
   const pm = provider || createPurelymail(cfg, log);
-  const box = (r) => ({ id: r.id, address: r.address, name: r.name, usedGb: r.used_gb, created: r.created_at.slice(0, 10), lastLogin: r.last_login ? r.last_login.slice(0, 10) : null, role: r.role, status: r.provider_status });
+  const box = (r) => ({ id: r.id, passwordStored: !!r.password_enc, address: r.address, name: r.name, usedGb: r.used_gb, created: r.created_at.slice(0, 10), lastLogin: r.last_login ? r.last_login.slice(0, 10) : null, role: r.role, status: r.provider_status });
   const alias = (r) => ({ id: r.id, from: r.from_addr, to: r.to_addr });
 
   const subscription = async (userId) => {
@@ -152,7 +152,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
       try { await ensureProviderDomain(userId, d); await pm.createUser({ local: lp, domain: d.name, password }); }
       catch (e) { await db.run("DELETE FROM mailboxes WHERE id = ? AND provider_status = 'creating'", bid); throw e; }
       status = 'active';
-      await db.run("UPDATE mailboxes SET provider_status = 'active' WHERE id = ?", bid);
+      await db.run("UPDATE mailboxes SET provider_status = 'active', password_enc = ? WHERE id = ?", vault.encrypt(password), bid);   // conservé chiffré : le titulaire peut le revoir (revealPassword)
     }
     await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'mail-plus', `Boîte ${address} créée`, now());
     return { mailbox: box(await db.get('SELECT * FROM mailboxes WHERE id = ?', bid)), initialPassword: status === 'active' && !chosenPw ? password : null, providerReady: status === 'active' };
@@ -232,7 +232,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
       try {
         const alias = renameMode ? 'susp-' + crypto.randomBytes(5).toString('hex') : '';
         if (pm.enabled) await pm.modifyUser({ local: b.local_part, domain: b.domain, newLocal: alias || undefined, password: alias ? undefined : secret() });
-        await db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ?, tokens_valid_after = ? WHERE id = ?", alias, alias ? 'pending' : '', Date.now(), b.id);
+        await db.run("UPDATE mailboxes SET provider_status = 'suspended', provider_user = ?, rule_state = ?, tokens_valid_after = ?, password_enc = CASE WHEN ? = '' THEN '' ELSE password_enc END WHERE id = ?", alias, alias ? 'pending' : '', Date.now(), alias, b.id);   // mode « password » : l'ancien mot de passe n'est plus valable
         suspended++;
       } catch (e) { failed++; log('warn', 'mailbox_suspend_failed', { mailbox: b.address }); }
     }
@@ -247,7 +247,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
       const password = b.provider_user ? undefined : secret();
       try {
         if (pm.enabled) await pm.modifyUser({ local: providerLocal(b), domain: b.domain, newLocal: b.provider_user ? b.local_part : undefined, password });
-        await db.run("UPDATE mailboxes SET provider_status = 'active', provider_user = '', rule_state = ? WHERE id = ?", b.provider_user ? 'cleanup' : '', b.id);
+        await db.run("UPDATE mailboxes SET provider_status = 'active', provider_user = '', rule_state = ?, password_enc = COALESCE(CAST(? AS TEXT), password_enc) WHERE id = ?", b.provider_user ? 'cleanup' : '', password === undefined ? null : vault.encrypt(password), b.id);
         mailboxes.push({ address: b.address, password });
       } catch (e) { failed++; log('warn', 'mailbox_reactivate_failed', { mailbox: b.address }); }
     }
@@ -274,9 +274,34 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     if (b.provider_status !== 'active' || !pm.enabled) throw new HttpError(503, 'La messagerie est en cours d’activation. Réessayez dans quelques minutes.', 'mailbox_not_ready');
     const pw = validatePassword(password, b.local_part);
     await pm.modifyUser({ local: b.local_part, domain: b.domain, password: pw });
-    await db.run('UPDATE mailboxes SET tokens_valid_after = ? WHERE id = ?', Date.now(), b.id);   // les sessions de l'application sont déconnectées
+    await db.run('UPDATE mailboxes SET tokens_valid_after = ?, password_enc = ? WHERE id = ?', Date.now(), vault.encrypt(pw), b.id);   // les sessions de l'application sont déconnectées ; le nouveau mot de passe est conservé chiffré
     await db.run('INSERT INTO activity (user_id, icon, text, at) VALUES (?,?,?,?)', userId, 'key-round', `Mot de passe de ${b.address} modifié`, now());
     return { ok: true };
+  }
+
+  /**
+   * Le titulaire du compte revoit le mot de passe d'une de ses boîtes (espace client). Protections : mot de passe du COMPTE ressaisi (sauf compte Google sans mot de passe),
+   * 5 erreurs par compte et par 15 minutes puis blocage, boîte du titulaire uniquement, aucun journal du mot de passe (seulement l'événement), conservé chiffré (AES-256-GCM).
+   */
+  const revealFails = new Map();
+  async function revealPassword(userId, boxId, accountPassword) {
+    const f = revealFails.get(userId);
+    if (f && f.n >= 5 && Date.now() - f.t < 15 * 60_000) throw new HttpError(429, 'Trop de tentatives. Réessayez dans quelques minutes.', 'rate_limited');
+    const u = await db.get('SELECT password_hash FROM users WHERE id = ?', userId);
+    if (u && u.password_hash && !verifyPassword(String(accountPassword || ''), u.password_hash)) {
+      revealFails.set(userId, { n: (f && Date.now() - f.t < 15 * 60_000 ? f.n : 0) + 1, t: Date.now() });
+      if (revealFails.size > 2000) for (const [k, v] of revealFails) if (Date.now() - v.t > 15 * 60_000) revealFails.delete(k);
+      throw new HttpError(403, 'Mot de passe du compte incorrect.', 'invalid_credentials');
+    }
+    revealFails.delete(userId);
+    const b = await db.get('SELECT * FROM mailboxes WHERE id = ? AND user_id = ?', String(boxId), userId);
+    if (!b) throw new HttpError(404, 'Boîte introuvable.', 'not_found');
+    if (b.provider_status === 'suspended') throw new HttpError(409, 'Cette boîte est suspendue : réglez votre offre pour la réactiver.', 'mailbox_suspended');
+    if (!b.password_enc) throw new HttpError(404, 'Le mot de passe de cette boîte n’est pas conservé. Définissez-en un nouveau avec « Mot de passe ».', 'password_unknown');
+    let password;
+    try { password = vault.decrypt(b.password_enc); } catch (e) { throw new HttpError(404, 'Le mot de passe de cette boîte n’est pas lisible. Définissez-en un nouveau.', 'password_unknown'); }
+    log('info', 'mailbox_password_revealed', { mailbox: b.address });
+    return { address: b.address, password };
   }
 
   /**
@@ -322,7 +347,7 @@ function createMail({ cfg, db, log, provider, dns, vault, mailer }) {
     smtp: { host: process.env.SMTP_PUBLIC_HOST || 'smtp.purelymail.com', port: 465, security: 'ssl', alternative: { port: 587, security: 'starttls' } },
   });
 
-  return { listBoxes, listAliases, connection, changePassword, appLogin, validatePassword, ownership, provider: pm, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
+  return { listBoxes, listAliases, connection, changePassword, revealPassword, appLogin, validatePassword, ownership, provider: pm, createBox, removeBox, addAlias, removeAlias, suspendMailboxes, reactivateMailboxes, reconcileRules, providerEnabled: pm.enabled };
 }
 
 module.exports = { createMail, createPurelymail };
