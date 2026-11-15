@@ -1,0 +1,18 @@
+{
+  "name": "freda-mail-mcp",
+  "version": "1.0.0",
+  "description": "Serveur MCP (Model Context Protocol) pour Freda Mail : permet à Claude (Desktop, Code…) de lire et de répondre au courrier d'une boîte, via l'API publique /api/v1 et une clé API personnelle.",
+  "type": "module",
+  "private": true,
+  "bin": { "freda-mail-mcp": "src/index.js" },
+  "main": "src/server.js",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^3.25.76"
+  }
+}

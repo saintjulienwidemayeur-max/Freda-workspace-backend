@@ -141,6 +141,8 @@ def verify(headers, raw_body: bytes, secret: str) -> bool:
         return False
     expected = "sha256=" + hmac.new(secret.encode(), ts.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(headers.get("X-Freda-Signature", ""), expected)`)}</code></pre>
+<h2>Utiliser avec Claude (MCP)</h2>
+<p>Un serveur MCP (stdio) permet à Claude Desktop et Claude Code de lire et répondre à vos e-mails avec une clé API. Installation et configuration : dossier <code>mcp/</code> du dépôt <code>Freda-workspace-backend</code> sur GitHub (<code>mcp/README.md</code>). Avec une clé « Lecture seule », les outils d’envoi ne sont pas proposés.</p>
 </main></body></html>`;
 }
 

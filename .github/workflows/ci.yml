@@ -15,3 +15,7 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npm test
+      - run: npm ci
+        working-directory: mcp
+      - run: npm test
+        working-directory: mcp
