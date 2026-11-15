@@ -273,6 +273,7 @@ function createApp(deps) {
     return { binary: { type: ph.type, data: ph.data, etag: '"' + ph.version + '"' } };
   }, mbx);
   route('POST', '/api/mailboxes/:id/password', async (c, p) => { limit(L.auth, c.user.id); return await mail.changePassword(c.user.id, p[0], (await c.body(2048)).password); }, auth);
+  route('POST', '/api/mailboxes/:id/reveal-password', async (c, p) => { limit(L.auth, c.user.id); return await mail.revealPassword(c.user.id, p[0], (await c.body(2048)).password); }, auth);
   route('DELETE', '/api/mailboxes/:id', async (c, p) => (await mail.removeBox(c.user.id, p[0])), auth);
   route('POST', '/api/aliases', async (c) => (await mail.addAlias(c.user.id, await c.body())), auth);
   route('DELETE', '/api/aliases/:id', async (c, p) => (await mail.removeAlias(c.user.id, p[0])), auth);
