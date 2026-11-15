@@ -24,7 +24,8 @@ function loadConfig(env = process.env) {
     port: Number(env.PORT) || 8787,
     appUrl: (env.APP_URL || 'https://fredaworkspace.com').replace(/\/$/, ''),     // site (frontend)
     apiUrl: (env.API_URL || 'http://localhost:8787').replace(/\/$/, ''),          // URL publique de cette API (rappels OAuth)
-    allowedOrigins: list(env.ALLOWED_ORIGINS, 'http://localhost:8080'),
+    // Origines autorisées (CORS + passerelle WebSocket). Le webmail officiel est toujours autorisé (WEBMAIL_ORIGINS pour le changer) : ALLOWED_ORIGINS n'a pas à le répéter.
+    allowedOrigins: [...new Set([...list(env.ALLOWED_ORIGINS, 'http://localhost:8080'), ...list(env.WEBMAIL_ORIGINS, 'https://webmail.fredaworkspace.com')])],
     keepAlive: { url: env.KEEP_ALIVE === 'false' ? '' : (env.KEEP_ALIVE_URL || env.RENDER_EXTERNAL_URL || ''), intervalMs: Number(env.KEEP_ALIVE_MS) || 10 * 60 * 1000 },   // auto-ping contre l'endormissement (Render gratuit)
     databaseUrl: env.DATABASE_URL || '',                           // PostgreSQL (Supabase : URI du « Session pooler »)
     databasePoolMax: Number(env.DATABASE_POOL_MAX) || 10,                // connexions simultanées maximum vers PostgreSQL (Supabase : rester sous la limite du pooler)
