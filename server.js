@@ -33,6 +33,7 @@ const { createApiKeys } = require('./src/api-keys');
 const { createGateway } = require('./src/mail-gateway');
 const { createApiV1 } = require('./src/api-v1');
 const { createWebhooks } = require('./src/webhooks');
+const { createRemoteMcp, baseOf: mcpBase } = require('./src/remote-mcp');
 const { buildSpec, renderDocs } = require('./src/api-docs');
 
 const MAX_BODY = 32 * 1024;
@@ -92,6 +93,7 @@ function createApp(deps) {
   const apiKeys = createApiKeys({ cfg, db, vault, mail, log: logger });
   const gateway = deps.gateway || createGateway({ cfg, log: logger, tlsOptions: deps.gatewayTls });
   const apiV1 = createApiV1({ cfg, db, keys: apiKeys, gateway, log: logger });
+  const remoteMcp = createRemoteMcp({ cfg, db, vault, keys: apiKeys, mail, apiV1, log: logger });
   const webhooks = createWebhooks({ cfg, db, vault, keys: apiKeys, gateway, log: logger, allowPrivate: !!deps.webhookAllowPrivate, retryDelays: deps.webhookRetryDelays });
   const apiSpec = buildSpec({ apiUrl: cfg.apiUrl, limits: apiV1.limits });
   const adminTools = createAdminTools({ cfg, db, mail, mailer, log: logger, templates });
@@ -247,7 +249,7 @@ function createApp(deps) {
   route('DELETE', '/api/mail/push', async (c) => { limit(L.write, c.mailbox.id); return await push.unregister(c.mailbox, c.url.searchParams.get('token') || (await c.body(4096)).token); }, mbx);
   /* Photos de profil : visibles seulement par les utilisateurs connectés de l'application (session de boîte) */
   /* Intégrations & API (paramètres du webmail) : session de BOÎTE uniquement, jamais une clé API (une clé volée ne peut ni créer d'autres clés ni rediriger le courrier) */
-  route('GET', '/api/mail/api-keys', async (c) => ({ keys: await apiKeys.list(c.mailbox), max: apiKeys.MAX_KEYS, scopes: apiKeys.SCOPES, docsUrl: cfg.apiUrl + '/api/v1/docs', apiUrl: cfg.apiUrl }), mbx);
+  route('GET', '/api/mail/api-keys', async (c) => ({ keys: await apiKeys.list(c.mailbox), max: apiKeys.MAX_KEYS, scopes: apiKeys.SCOPES, docsUrl: cfg.apiUrl + '/api/v1/docs', apiUrl: cfg.apiUrl, mcpUrl: mcpBase(c.req) + '/mcp' }), mbx);
   route('POST', '/api/mail/api-keys', async (c) => { limit(L.keys, c.mailbox.id); return await apiKeys.create(c.mailbox, await c.body(2048)); }, mbx);
   route('DELETE', '/api/mail/api-keys/:id', async (c, p) => { limit(L.write, c.mailbox.id); return await apiKeys.remove(c.mailbox, p[0]); }, mbx);
   route('GET', '/api/mail/webhook', async (c) => await webhooks.get(c.mailbox), mbx);
@@ -255,6 +257,15 @@ function createApp(deps) {
   route('POST', '/api/mail/webhook/secret', async (c) => { limit(L.keys, c.mailbox.id); return await webhooks.rotateSecret(c.mailbox); }, mbx);
   route('POST', '/api/mail/webhook/test', async (c) => { limit(L.keys, c.mailbox.id); return await webhooks.test(c.mailbox); }, mbx);
   route('DELETE', '/api/mail/webhook', async (c) => { limit(L.write, c.mailbox.id); return await webhooks.remove(c.mailbox); }, mbx);
+  /* Serveur MCP distant + OAuth 2.1 (connecteurs personnalisés de claude.ai) : voir src/remote-mcp.js */
+  route('GET', '/.well-known/oauth-protected-resource', async (c) => remoteMcp.protectedResource(c));
+  route('GET', '/.well-known/oauth-protected-resource/mcp', async (c) => remoteMcp.protectedResource(c));
+  route('GET', '/.well-known/oauth-authorization-server', async (c) => remoteMcp.authServer(c));
+  route('POST', '/oauth/register', async (c) => { limit(L.auth, c.ip); return await remoteMcp.register(c); });
+  route('GET', '/oauth/authorize', async (c) => { limit(L.search, c.ip); return await remoteMcp.authorizeGet(c); });
+  route('POST', '/oauth/authorize', async (c) => { limit(L.auth, c.ip); return await remoteMcp.authorizePost(c); });
+  route('POST', '/oauth/token', async (c) => { limit(L.auth, c.ip); return await remoteMcp.token(c); });
+  for (const m of ['POST', 'GET', 'DELETE']) route(m, '/mcp', async (c) => remoteMcp.mcp(c));
   /* API publique pour agents IA : Authorization: Bearer fmk_… */
   route('GET', '/api/v1/openapi.json', async () => apiSpec);
   route('GET', '/api/v1/docs', async () => ({ html: renderDocs(apiSpec) }));
@@ -363,7 +374,7 @@ function createApp(deps) {
       let matched = null, params = null;
       for (const r of routes) { if (r.method !== req.method) continue; const m = r.re.exec(url.pathname); if (m) { matched = r; params = m.slice(1); break; } }
       if (!matched) throw new HttpError(404, 'Route introuvable.', 'not_found');
-      const ctx = { req, url, ip, headers: extraHeaders, body: async (max) => (await readJson(req, max)), raw: async (max) => (await readRaw(req, max)) };
+      const ctx = { req, url, ip, headers: extraHeaders, body: async (max) => (await readJson(req, max)), raw: async (max) => (await readRaw(req, max)), form: async (max = 8192) => Object.fromEntries(new URLSearchParams((await readRaw(req, max)).toString('utf8'))) };
       if (matched.opts.admin) {
         const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
         if (adminFails.blocked(ip)) throw new HttpError(429, 'Trop de tentatives. Réessayez plus tard.', 'rate_limited');
@@ -378,6 +389,15 @@ function createApp(deps) {
         if (req.headers['if-none-match'] === b.etag) { res.writeHead(304, { ETag: b.etag, 'Cache-Control': 'private, max-age=60', ...cors }); return res.end(); }
         res.writeHead(200, { 'Content-Type': b.type, 'Content-Length': b.data.length, ETag: b.etag, 'Cache-Control': 'private, max-age=60', 'X-Content-Type-Options': 'nosniff', ...cors });
         return res.end(b.data);
+      }
+      if (out && out.__http) {   // réponse HTTP explicite (OAuth, MCP) : statut, en-têtes, corps JSON facultatif (202 = sans corps)
+        const h = out.__http;
+        if (h.body === undefined) { res.writeHead(h.status, { 'Cache-Control': 'no-store', ...extraHeaders, ...(h.headers || {}) }); return res.end(); }
+        return send(h.status, h.body, { ...extraHeaders, ...(h.headers || {}) });
+      }
+      if (out && out.__html) {   // page d'autorisation OAuth (CSP propre à la page)
+        res.writeHead(out.__html.status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': out.__html.csp });
+        return res.end(out.__html.html);
       }
       if (out && out.html) {   // page de documentation : HTML statique généré côté serveur, aucun script ni ressource externe
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" });

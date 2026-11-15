@@ -142,7 +142,8 @@ def verify(headers, raw_body: bytes, secret: str) -> bool:
     expected = "sha256=" + hmac.new(secret.encode(), ts.encode() + b"." + raw_body, hashlib.sha256).hexdigest()
     return hmac.compare_digest(headers.get("X-Freda-Signature", ""), expected)`)}</code></pre>
 <h2>Utiliser avec Claude (MCP)</h2>
-<p>Un serveur MCP (stdio) permet à Claude Desktop et Claude Code de lire et répondre à vos e-mails avec une clé API. Installation et configuration : dossier <code>mcp/</code> du dépôt <code>Freda-workspace-backend</code> sur GitHub (<code>mcp/README.md</code>). Avec une clé « Lecture seule », les outils d’envoi ne sont pas proposés.</p>
+<p><b>claude.ai (web et mobile) : connecteur personnalisé.</b> Dans Claude : Paramètres › Connecteurs › Ajouter un connecteur personnalisé, puis collez l’adresse du connecteur affichée dans le webmail (Intégrations &amp; API › Connecteur Claude), de la forme <code>https://…/mcp</code>. Claude ouvre une page d’autorisation : saisissez l’adresse de la boîte et son mot de passe, choisissez « Lecture seule » ou « Lecture et envoi », puis autorisez. L’accès créé apparaît comme une clé dans le webmail (Intégrations &amp; API) : supprimez-la pour couper le connecteur.</p>
+<p><b>Claude Desktop et Claude Code :</b> serveur MCP local (stdio) avec une clé API : dossier <code>mcp/</code> du dépôt <code>Freda-workspace-backend</code> sur GitHub (<code>mcp/README.md</code>). Avec une clé « Lecture seule », les outils d’envoi ne sont pas proposés.</p>
 </main></body></html>`;
 }
 

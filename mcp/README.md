@@ -61,7 +61,7 @@ Variables : `FREDA_API_KEY` (obligatoire), `FREDA_API_URL` (défaut `https://fre
 - La clé donne accès à une seule boîte ; supprimez-la dans le webmail en cas de doute. Changer le mot de passe de la boîte invalide toutes les clés.
 - Limites de l'API : 60 requêtes/minute par clé, 10 envois/minute et 200 envois/jour par boîte.
 - Ce serveur tourne sur **votre** ordinateur (stdio) : la clé ne quitte pas votre machine, sauf vers l'API Freda Mail.
-- Les « connecteurs personnalisés » de claude.ai (web, mobile) exigent un serveur MCP distant avec connexion OAuth : non fourni ici.
+- Pour **claude.ai (web, mobile)**, utilisez plutôt le connecteur personnalisé : Paramètres › Connecteurs › Ajouter un connecteur personnalisé, adresse `https://<adresse de l'API>/mcp` (affichée dans le webmail, Intégrations & API). Connexion OAuth 2.1 avec PKCE ; l'accès créé est une clé API supprimable.
 
 ## Développement
 
