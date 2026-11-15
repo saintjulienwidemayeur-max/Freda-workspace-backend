@@ -304,3 +304,9 @@ test('recherche : un nom déjà cherché récemment n’est pas redemandé à Na
   assert.strictEqual(r.status, 200);
   assert.strictEqual(count(), n1);
 });
+
+test('origines autorisées : le webmail officiel est toujours présent, ALLOWED_ORIGINS s’y ajoute sans doublon', () => {
+  assert.deepStrictEqual(loadConfig({}).allowedOrigins, ['http://localhost:8080', 'https://webmail.fredaworkspace.com']);
+  assert.deepStrictEqual(loadConfig({ ALLOWED_ORIGINS: 'https://fredaworkspace.com,https://webmail.fredaworkspace.com' }).allowedOrigins, ['https://fredaworkspace.com', 'https://webmail.fredaworkspace.com']);
+  assert.deepStrictEqual(loadConfig({ ALLOWED_ORIGINS: 'https://a.test', WEBMAIL_ORIGINS: 'https://w.test' }).allowedOrigins, ['https://a.test', 'https://w.test']);
+});
